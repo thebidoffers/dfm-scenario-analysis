@@ -6,7 +6,11 @@ Dubai Financial Market - Earnings Sensitivity Analysis
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import re
+from parsers import (
+    compute_portfolio_from_metrics,
+    parse_excel_bulletin,
+    parse_pdf_financials,
+)
 
 st.set_page_config(page_title="DFM Scenario Analysis", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -36,6 +40,8 @@ DEFAULT = {
     'investment_income': 165_348,
     'investment_deposits': 4_134_622,
     'investments_amortised_cost': 367_717,
+    'fvtoci': 0,
+    'fvtpl': 0,
     'total_traded_value': 165_000_000,  # AED 165B in thousands
     'period_months': 9,
     'trading_days': 252,
@@ -87,102 +93,19 @@ def fmt_smart_raw(val_aed):
         return "N/A"
 
 def parse_pdf(file):
-    """Parse financial statement PDF"""
     try:
-        import pdfplumber
-    except ImportError:
-        st.warning("pdfplumber not installed")
-        return None
-    
-    data = {'items': []}
-    try:
-        with pdfplumber.open(file) as pdf:
-            text = "".join([p.extract_text() or "" for p in pdf.pages])
-            
-            # Trading commission - 9-month figure (value is in AED thousands)
-            m = re.search(r'Trading commission fees\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)', text, re.I)
-            if m:
-                data['trading_commission'] = float(m.group(3).replace(',', ''))
-                data['items'].append(f"Trading Comm: {fmt_smart(data['trading_commission'])}")
-            
-            # Investment income - 9-month figure
-            m = re.search(r'Investment income\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)', text, re.I)
-            if m:
-                data['investment_income'] = float(m.group(3).replace(',', ''))
-                data['items'].append(f"Inv Income: {fmt_smart(data['investment_income'])}")
-            
-            # Investment Portfolio (deposits)
-            m = re.search(r'Investment deposits\s+\d+\s+([\d,]+)', text, re.I)
-            if m:
-                data['investment_deposits'] = float(m.group(1).replace(',', ''))
-                data['items'].append(f"Investment Deposits (cash at banks): {fmt_smart(data['investment_deposits'])}")
-            
-            # Investments at amortised cost (sukuks/bonds)
-            m = re.search(r'Investments at amortised cost\s+\d+\s+([\d,]+)', text, re.I)
-            if m:
-                data['investments_amortised_cost'] = float(m.group(1).replace(',', ''))
-                data['items'].append(f"Investments at Amortised Cost (sukuk & bonds): {fmt_smart(data['investments_amortised_cost'])}")
-            
-            # Period
-            if 'nine-month' in text.lower(): data['period_months'] = 9
-            elif 'six-month' in text.lower(): data['period_months'] = 6
-            elif 'year ended' in text.lower(): data['period_months'] = 12
-            else: data['period_months'] = 9
-            
+        return parse_pdf_financials(file)
     except Exception as e:
         st.error(f"PDF parsing error: {e}")
         return None
-    
-    return data if data.get('items') else None
+
 
 def parse_excel(file):
-    """Parse bulletin Excel - returns value in AED thousands"""
-    data = {'items': []}
     try:
-        df = pd.read_excel(file, sheet_name=0, header=1)
-        
-        # Find trade value column
-        tv_col = None
-        for c in df.columns:
-            if 'trade value' in str(c).lower():
-                tv_col = c
-                break
-        
-        if tv_col is None:
-            st.warning("No 'Trade Value' column found")
-            return None
-        
-        # Convert to numeric
-        df['TV'] = pd.to_numeric(df[tv_col].astype(str).str.replace(',', ''), errors='coerce')
-        
-        # Find name column
-        name_col = df.columns[0]
-        for c in df.columns:
-            if any(x in str(c).lower() for x in ['symbol', 'security', 'name']):
-                name_col = c
-                break
-        
-        # Look for total row
-        for pattern in ['Market Grand Total', 'Market Trades Total', 'Shares Grand Total', 'Grand Total']:
-            mask = df[name_col].astype(str).str.contains(pattern, case=False, na=False)
-            if mask.any():
-                val = df.loc[mask, 'TV'].iloc[0]
-                if pd.notna(val) and val > 0:
-                    # Bulletin reports in AED (not thousands), so divide by 1000 for internal use
-                    if val > 1_000_000_000_000:  # > 1 trillion = definitely in AED
-                        data['total_traded_value'] = val / 1000  # Convert to thousands
-                    else:
-                        data['total_traded_value'] = val / 1000  # Assume AED, convert to thousands
-                    
-                    # Display the raw value smartly
-                    data['items'].append(f"Traded Value: {fmt_smart_raw(val)}")
-                    break
-        
+        return parse_excel_bulletin(file)
     except Exception as e:
         st.error(f"Excel parsing error: {e}")
         return None
-    
-    return data if data.get('items') else None
 
 def calc_comm(tv, bps): 
     """Calculate commission (tv in thousands, returns thousands)"""
@@ -231,15 +154,39 @@ def main():
     d = DEFAULT.copy()
     
     if fs:
-        for key in ['trading_commission', 'investment_income', 'investment_deposits', 'investments_amortised_cost', 'period_months']:
-            if key in fs and fs[key]:
-                d[key] = fs[key]
+        fs_metrics = fs.get("metrics", {})
+        for key in [
+            'trading_commission',
+            'investment_income',
+            'investment_deposits',
+            'investments_amortised_cost',
+            'fvtoci',
+            'fvtpl',
+            'period_months',
+        ]:
+            if key in fs_metrics and fs_metrics[key]:
+                d[key] = fs_metrics[key]
     
-    if bul and bul.get('total_traded_value'):
-        d['total_traded_value'] = bul['total_traded_value']
+    if bul:
+        bul_metrics = bul.get("metrics", {})
+        if bul_metrics.get('total_traded_value'):
+            d['total_traded_value'] = bul_metrics['total_traded_value']
     
     # Calculate derived values (all in thousands)
-    d['portfolio'] = d['investment_deposits'] + d['investments_amortised_cost']
+    portfolio_components = [
+        d.get('investment_deposits'),
+        d.get('investments_amortised_cost'),
+        d.get('fvtoci'),
+        d.get('fvtpl'),
+    ]
+    d['portfolio'] = compute_portfolio_from_metrics(
+        {
+            "investment_deposits": portfolio_components[0],
+            "investments_amortised_cost": portfolio_components[1],
+            "fvtoci": portfolio_components[2],
+            "fvtpl": portfolio_components[3],
+        }
+    ) or 0
     d['adtv'] = d['total_traded_value'] / d['trading_days']
     d['comm_annual'] = d['trading_commission'] * 12 / d['period_months']
     d['inv_annual'] = d['investment_income'] * 12 / d['period_months']
@@ -269,14 +216,51 @@ def main():
     c1, c2 = st.columns(2)
     with c1:
         if fs:
-            st.markdown(f'<div class="success-box"><strong>✅ Financial Statement</strong><br>{"<br>".join(fs.get("items", []))}</div>', unsafe_allow_html=True)
+            fs_metrics = fs.get("metrics", {})
+            fs_items = []
+            if fs_metrics.get("trading_commission"):
+                fs_items.append(f"Trading Comm: {fmt_smart(fs_metrics['trading_commission'])}")
+            if fs_metrics.get("investment_income"):
+                fs_items.append(f"Inv Income: {fmt_smart(fs_metrics['investment_income'])}")
+            if fs_metrics.get("investment_deposits"):
+                fs_items.append(f"Investment Deposits: {fmt_smart(fs_metrics['investment_deposits'])}")
+            if fs_metrics.get("investments_amortised_cost"):
+                fs_items.append(
+                    f"Investments at Amortised Cost: {fmt_smart(fs_metrics['investments_amortised_cost'])}"
+                )
+            if fs_metrics.get("fvtoci"):
+                fs_items.append(f"FVTOCI: {fmt_smart(fs_metrics['fvtoci'])}")
+            if fs_metrics.get("fvtpl"):
+                fs_items.append(f"FVTPL: {fmt_smart(fs_metrics['fvtpl'])}")
+            st.markdown(
+                f'<div class="success-box"><strong>✅ Financial Statement</strong><br>{"<br>".join(fs_items)}</div>',
+                unsafe_allow_html=True,
+            )
         else:
             st.markdown('<div class="warning-box"><strong>⚠️ No FS uploaded</strong><br>Using Q3 2025 defaults</div>', unsafe_allow_html=True)
     with c2:
         if bul:
-            st.markdown(f'<div class="success-box"><strong>✅ Bulletin</strong><br>{"<br>".join(bul.get("items", []))}</div>', unsafe_allow_html=True)
+            bul_metrics = bul.get("metrics", {})
+            bul_items = []
+            if bul_metrics.get("total_traded_value"):
+                bul_items.append(f"Traded Value: {fmt_smart(bul_metrics['total_traded_value'])}")
+            st.markdown(
+                f'<div class="success-box"><strong>✅ Bulletin</strong><br>{"<br>".join(bul_items)}</div>',
+                unsafe_allow_html=True,
+            )
         else:
             st.markdown('<div class="warning-box"><strong>⚠️ No Bulletin uploaded</strong><br>Using 2025 defaults</div>', unsafe_allow_html=True)
+
+    with st.expander("Extraction details"):
+        audit_entries = []
+        if fs:
+            audit_entries.extend(fs.get("audit", []))
+        if bul:
+            audit_entries.extend(bul.get("audit", []))
+        if audit_entries:
+            st.dataframe(pd.DataFrame(audit_entries), use_container_width=True, hide_index=True)
+        else:
+            st.info("No extraction audit available.")
     
     # ========== METRICS ==========
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
