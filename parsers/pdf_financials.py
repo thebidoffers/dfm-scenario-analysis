@@ -116,6 +116,7 @@ def _choose_current_period_value(
     first_val = parse_number(first)
     second_val = parse_number(second)
     if first_val is not None and second_val is not None:
+        # Heuristic: skip note numbers like "20" when followed by a larger value.
         if abs(first_val) <= 50 and abs(second_val) > 50:
             return second
     if year_order and year_order[0] < year_order[1]:

@@ -36,6 +36,7 @@ def test_pdf_extraction_values_for_2025_fixture():
     result = parse_pdf_financials(path)
     metrics = result.get("metrics", {})
 
+    # Exact 2025 fixture expectations (current-year column).
     assert metrics.get("trading_commission") == 402951
     assert metrics.get("investment_income") == 221239
     assert metrics.get("dividend_income") == 54619
