@@ -358,12 +358,12 @@ def main():
             curr_comm = calc_comm(scenario_tv, current_rate)
             new_comm = calc_comm(scenario_tv, new_rate)
             diff = new_comm - curr_comm
-            pct = (diff / curr_comm * 100) if curr_comm > 0 else 0
+            pct_str = f"{(diff / curr_comm * 100):+.1f}%" if curr_comm > 0 else "—"
             
             m1, m2, m3 = st.columns(3)
             m1.metric("Current Income", fmt_smart(curr_comm))
             m2.metric("Scenario Income", fmt_smart(new_comm), f"{new_rate - current_rate:+.1f} bps")
-            m3.metric("Annual Impact", fmt_smart(diff), f"{pct:+.1f}%", delta_color="normal" if diff >= 0 else "inverse")
+            m3.metric("Annual Impact", fmt_smart(diff), pct_str, delta_color="normal")
             
             # Chart
             fig = go.Figure()
@@ -373,14 +373,13 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
         
         # ---------- OFFSET CALCULATION ----------
-        if new_rate < current_rate:
+        if new_rate < current_rate and new_rate > 0:
             st.markdown("---")
             st.markdown("#### 📊 Breakeven Analysis: How Much Must Traded Value Increase?")
             
             # Calculate: To maintain current commission with new rate, what traded value is needed?
-            # Formula: TV_required = Current_Commission / (New_Rate / 10000)
-            # TV_required in thousands = curr_comm / (new_rate / 10000)
-            tv_required = (curr_comm * 10000) / new_rate  # in thousands
+            # Formula: TV_required = V_current × (current_rate / new_rate)
+            tv_required = scenario_tv * (current_rate / new_rate)  # in thousands
             tv_increase_needed = tv_required - scenario_tv  # in thousands
             tv_increase_pct = (tv_increase_needed / scenario_tv * 100) if scenario_tv > 0 else 0
             
@@ -400,6 +399,8 @@ def main():
                 • Required: {fmt_smart(tv_required)} × {new_rate:.1f} bps = {fmt_smart(curr_comm)}<br><br>
                 <strong>Traded value must increase by {fmt_smart(tv_increase_needed)} (+{tv_increase_pct:.1f}%)</strong> to offset the fee reduction.
             </div>''', unsafe_allow_html=True)
+        elif new_rate <= 0:
+            st.error("⚠️ New rate must be greater than 0 bps")
     
     # ---------- TAB 2: Traded Value ----------
     with tab2:
@@ -434,19 +435,19 @@ def main():
             cur_comm = calc_comm(cur_tv, rate)
             new_comm = calc_comm(new_tv, rate)
             diff = new_comm - cur_comm
-            tv_pct = ((new_tv - cur_tv) / cur_tv * 100) if cur_tv > 0 else 0
-            comm_pct = (diff / cur_comm * 100) if cur_comm > 0 else 0
+            tv_pct_str = f"{((new_tv - cur_tv) / cur_tv * 100):+.1f}%" if cur_tv > 0 else "—"
+            comm_pct_str = f"{(diff / cur_comm * 100):+.1f}%" if cur_comm > 0 else "—"
             
             m1, m2, m3 = st.columns(3)
             m1.metric("Current TV", fmt_smart(cur_tv))
-            m2.metric("Scenario TV", fmt_smart(new_tv), f"{tv_pct:+.1f}%")
-            m3.metric("Commission Δ", fmt_smart(diff), f"{comm_pct:+.1f}%", delta_color="normal" if diff >= 0 else "inverse")
+            m2.metric("Scenario TV", fmt_smart(new_tv), tv_pct_str)
+            m3.metric("Commission Δ", fmt_smart(diff), comm_pct_str, delta_color="normal")
             
             st.dataframe(pd.DataFrame({
                 'Metric': ['Traded Value', 'ADTV', 'Commission'],
                 'Current': [fmt_smart(cur_tv), fmt_smart(cur_tv/252), fmt_smart(cur_comm)],
                 'Scenario': [fmt_smart(new_tv), fmt_smart(new_tv/252), fmt_smart(new_comm)],
-                'Change': [f"{tv_pct:+.1f}%", f"{tv_pct:+.1f}%", fmt_smart(diff)]
+                'Change': [tv_pct_str, tv_pct_str, fmt_smart(diff)]
             }), hide_index=True, use_container_width=True)
     
     # ---------- TAB 3: Interest Rate ----------
@@ -476,12 +477,12 @@ def main():
             cur_inc = calc_inv(portfolio, cur_rate)
             new_inc = calc_inv(portfolio, new_rate)
             diff = new_inc - cur_inc
-            pct = (diff / cur_inc * 100) if cur_inc > 0 else 0
+            pct_str = f"{(diff / cur_inc * 100):+.1f}%" if cur_inc > 0 else "—"
             
             m1, m2, m3 = st.columns(3)
             m1.metric("Current Income", fmt_smart(cur_inc), f"@ {cur_rate:.2f}%")
             m2.metric("Scenario Income", fmt_smart(new_inc), f"@ {new_rate:.2f}%")
-            m3.metric("Annual Impact", fmt_smart(diff), f"{pct:+.1f}%", delta_color="normal" if diff >= 0 else "inverse")
+            m3.metric("Annual Impact", fmt_smart(diff), pct_str, delta_color="normal")
             
             st.markdown(f'<div class="info-box"><strong>Calculation:</strong><br>{fmt_smart(portfolio)} × {chg_map[rate_chg]*100:+.0f} bps = <strong>{fmt_smart(diff)}</strong> annual impact</div>', unsafe_allow_html=True)
             
