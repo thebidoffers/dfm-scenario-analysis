@@ -6,11 +6,7 @@ Dubai Financial Market - Earnings Sensitivity Analysis
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from parsers import (
-    compute_portfolio_from_metrics,
-    parse_excel_bulletin,
-    parse_pdf_financials,
-)
+import re
 
 st.set_page_config(page_title="DFM Scenario Analysis", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -40,8 +36,6 @@ DEFAULT = {
     'investment_income': 165_348,
     'investment_deposits': 4_134_622,
     'investments_amortised_cost': 367_717,
-    'fvtoci': 0,
-    'fvtpl': 0,
     'total_traded_value': 165_000_000,  # AED 165B in thousands
     'period_months': 9,
     'trading_days': 252,
@@ -54,21 +48,28 @@ def fmt_smart(val_thousands):
     - >= 1B (1,000,000 thousands) -> show as X.XXB
     - >= 1M (1,000 thousands) -> show as X.XXM  
     - < 1M -> show as X.XXK
+    Handles negative numbers for showing impacts/changes
     """
     try:
         v = float(val_thousands)
-        if v <= 0:
-            return "N/A"
+        if v == 0:
+            return "AED 0"
+        
+        # Handle negative numbers
+        sign = ""
+        if v < 0:
+            sign = "-"
+            v = abs(v)
         
         # Convert from thousands to actual AED
         aed = v * 1000
         
         if aed >= 1_000_000_000:  # >= 1 Billion
-            return f"AED {aed / 1_000_000_000:.2f}B"
+            return f"{sign}AED {aed / 1_000_000_000:.2f}B"
         elif aed >= 1_000_000:  # >= 1 Million
-            return f"AED {aed / 1_000_000:.2f}M"
+            return f"{sign}AED {aed / 1_000_000:.2f}M"
         else:  # Thousands
-            return f"AED {aed / 1_000:.2f}K"
+            return f"{sign}AED {aed / 1_000:.2f}K"
     except:
         return "N/A"
 
@@ -93,19 +94,102 @@ def fmt_smart_raw(val_aed):
         return "N/A"
 
 def parse_pdf(file):
+    """Parse financial statement PDF"""
     try:
-        return parse_pdf_financials(file)
+        import pdfplumber
+    except ImportError:
+        st.warning("pdfplumber not installed")
+        return None
+    
+    data = {'items': []}
+    try:
+        with pdfplumber.open(file) as pdf:
+            text = "".join([p.extract_text() or "" for p in pdf.pages])
+            
+            # Trading commission - 9-month figure (value is in AED thousands)
+            m = re.search(r'Trading commission fees\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)', text, re.I)
+            if m:
+                data['trading_commission'] = float(m.group(3).replace(',', ''))
+                data['items'].append(f"Trading Comm: {fmt_smart(data['trading_commission'])}")
+            
+            # Investment income - 9-month figure
+            m = re.search(r'Investment income\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)', text, re.I)
+            if m:
+                data['investment_income'] = float(m.group(3).replace(',', ''))
+                data['items'].append(f"Inv Income: {fmt_smart(data['investment_income'])}")
+            
+            # Investment Portfolio (deposits)
+            m = re.search(r'Investment deposits\s+\d+\s+([\d,]+)', text, re.I)
+            if m:
+                data['investment_deposits'] = float(m.group(1).replace(',', ''))
+                data['items'].append(f"Investment Deposits (cash at banks): {fmt_smart(data['investment_deposits'])}")
+            
+            # Investments at amortised cost (sukuks/bonds)
+            m = re.search(r'Investments at amortised cost\s+\d+\s+([\d,]+)', text, re.I)
+            if m:
+                data['investments_amortised_cost'] = float(m.group(1).replace(',', ''))
+                data['items'].append(f"Investments at Amortised Cost (sukuk & bonds): {fmt_smart(data['investments_amortised_cost'])}")
+            
+            # Period
+            if 'nine-month' in text.lower(): data['period_months'] = 9
+            elif 'six-month' in text.lower(): data['period_months'] = 6
+            elif 'year ended' in text.lower(): data['period_months'] = 12
+            else: data['period_months'] = 9
+            
     except Exception as e:
         st.error(f"PDF parsing error: {e}")
         return None
-
+    
+    return data if data.get('items') else None
 
 def parse_excel(file):
+    """Parse bulletin Excel - returns value in AED thousands"""
+    data = {'items': []}
     try:
-        return parse_excel_bulletin(file)
+        df = pd.read_excel(file, sheet_name=0, header=1)
+        
+        # Find trade value column
+        tv_col = None
+        for c in df.columns:
+            if 'trade value' in str(c).lower():
+                tv_col = c
+                break
+        
+        if tv_col is None:
+            st.warning("No 'Trade Value' column found")
+            return None
+        
+        # Convert to numeric
+        df['TV'] = pd.to_numeric(df[tv_col].astype(str).str.replace(',', ''), errors='coerce')
+        
+        # Find name column
+        name_col = df.columns[0]
+        for c in df.columns:
+            if any(x in str(c).lower() for x in ['symbol', 'security', 'name']):
+                name_col = c
+                break
+        
+        # Look for total row
+        for pattern in ['Market Grand Total', 'Market Trades Total', 'Shares Grand Total', 'Grand Total']:
+            mask = df[name_col].astype(str).str.contains(pattern, case=False, na=False)
+            if mask.any():
+                val = df.loc[mask, 'TV'].iloc[0]
+                if pd.notna(val) and val > 0:
+                    # Bulletin reports in AED (not thousands), so divide by 1000 for internal use
+                    if val > 1_000_000_000_000:  # > 1 trillion = definitely in AED
+                        data['total_traded_value'] = val / 1000  # Convert to thousands
+                    else:
+                        data['total_traded_value'] = val / 1000  # Assume AED, convert to thousands
+                    
+                    # Display the raw value smartly
+                    data['items'].append(f"Traded Value: {fmt_smart_raw(val)}")
+                    break
+        
     except Exception as e:
         st.error(f"Excel parsing error: {e}")
         return None
+    
+    return data if data.get('items') else None
 
 def calc_comm(tv, bps): 
     """Calculate commission (tv in thousands, returns thousands)"""
@@ -154,39 +238,15 @@ def main():
     d = DEFAULT.copy()
     
     if fs:
-        fs_metrics = fs.get("metrics", {})
-        for key in [
-            'trading_commission',
-            'investment_income',
-            'investment_deposits',
-            'investments_amortised_cost',
-            'fvtoci',
-            'fvtpl',
-            'period_months',
-        ]:
-            if key in fs_metrics and fs_metrics[key]:
-                d[key] = fs_metrics[key]
+        for key in ['trading_commission', 'investment_income', 'investment_deposits', 'investments_amortised_cost', 'period_months']:
+            if key in fs and fs[key]:
+                d[key] = fs[key]
     
-    if bul:
-        bul_metrics = bul.get("metrics", {})
-        if bul_metrics.get('total_traded_value'):
-            d['total_traded_value'] = bul_metrics['total_traded_value']
+    if bul and bul.get('total_traded_value'):
+        d['total_traded_value'] = bul['total_traded_value']
     
     # Calculate derived values (all in thousands)
-    portfolio_components = [
-        d.get('investment_deposits'),
-        d.get('investments_amortised_cost'),
-        d.get('fvtoci'),
-        d.get('fvtpl'),
-    ]
-    d['portfolio'] = compute_portfolio_from_metrics(
-        {
-            "investment_deposits": portfolio_components[0],
-            "investments_amortised_cost": portfolio_components[1],
-            "fvtoci": portfolio_components[2],
-            "fvtpl": portfolio_components[3],
-        }
-    ) or 0
+    d['portfolio'] = d['investment_deposits'] + d['investments_amortised_cost']
     d['adtv'] = d['total_traded_value'] / d['trading_days']
     d['comm_annual'] = d['trading_commission'] * 12 / d['period_months']
     d['inv_annual'] = d['investment_income'] * 12 / d['period_months']
@@ -216,51 +276,14 @@ def main():
     c1, c2 = st.columns(2)
     with c1:
         if fs:
-            fs_metrics = fs.get("metrics", {})
-            fs_items = []
-            if fs_metrics.get("trading_commission"):
-                fs_items.append(f"Trading Comm: {fmt_smart(fs_metrics['trading_commission'])}")
-            if fs_metrics.get("investment_income"):
-                fs_items.append(f"Inv Income: {fmt_smart(fs_metrics['investment_income'])}")
-            if fs_metrics.get("investment_deposits"):
-                fs_items.append(f"Investment Deposits: {fmt_smart(fs_metrics['investment_deposits'])}")
-            if fs_metrics.get("investments_amortised_cost"):
-                fs_items.append(
-                    f"Investments at Amortised Cost: {fmt_smart(fs_metrics['investments_amortised_cost'])}"
-                )
-            if fs_metrics.get("fvtoci"):
-                fs_items.append(f"FVTOCI: {fmt_smart(fs_metrics['fvtoci'])}")
-            if fs_metrics.get("fvtpl"):
-                fs_items.append(f"FVTPL: {fmt_smart(fs_metrics['fvtpl'])}")
-            st.markdown(
-                f'<div class="success-box"><strong>✅ Financial Statement</strong><br>{"<br>".join(fs_items)}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="success-box"><strong>✅ Financial Statement</strong><br>{"<br>".join(fs.get("items", []))}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="warning-box"><strong>⚠️ No FS uploaded</strong><br>Using Q3 2025 defaults</div>', unsafe_allow_html=True)
     with c2:
         if bul:
-            bul_metrics = bul.get("metrics", {})
-            bul_items = []
-            if bul_metrics.get("total_traded_value"):
-                bul_items.append(f"Traded Value: {fmt_smart(bul_metrics['total_traded_value'])}")
-            st.markdown(
-                f'<div class="success-box"><strong>✅ Bulletin</strong><br>{"<br>".join(bul_items)}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(f'<div class="success-box"><strong>✅ Bulletin</strong><br>{"<br>".join(bul.get("items", []))}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="warning-box"><strong>⚠️ No Bulletin uploaded</strong><br>Using 2025 defaults</div>', unsafe_allow_html=True)
-
-    with st.expander("Extraction details"):
-        audit_entries = []
-        if fs:
-            audit_entries.extend(fs.get("audit", []))
-        if bul:
-            audit_entries.extend(bul.get("audit", []))
-        if audit_entries:
-            st.dataframe(pd.DataFrame(audit_entries), use_container_width=True, hide_index=True)
-        else:
-            st.info("No extraction audit available.")
     
     # ========== METRICS ==========
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
@@ -348,6 +371,35 @@ def main():
             fig.add_trace(go.Bar(name='Scenario', x=['Commission Income'], y=[new_comm/1000], marker_color='#66B2FF', text=[fmt_smart(new_comm)], textposition='outside'))
             fig.update_layout(barmode='group', height=300, plot_bgcolor='white', yaxis_title='AED Millions', showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
+        
+        # ---------- OFFSET CALCULATION ----------
+        if new_rate < current_rate:
+            st.markdown("---")
+            st.markdown("#### 📊 Breakeven Analysis: How Much Must Traded Value Increase?")
+            
+            # Calculate: To maintain current commission with new rate, what traded value is needed?
+            # Formula: TV_required = Current_Commission / (New_Rate / 10000)
+            # TV_required in thousands = curr_comm / (new_rate / 10000)
+            tv_required = (curr_comm * 10000) / new_rate  # in thousands
+            tv_increase_needed = tv_required - scenario_tv  # in thousands
+            tv_increase_pct = (tv_increase_needed / scenario_tv * 100) if scenario_tv > 0 else 0
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Current Traded Value", fmt_smart(scenario_tv))
+            with col2:
+                st.metric("Required Traded Value", fmt_smart(tv_required), "to maintain income")
+            with col3:
+                st.metric("Volume Increase Needed", fmt_smart(tv_increase_needed), f"+{tv_increase_pct:.1f}%")
+            
+            # Explanation box
+            st.markdown(f'''<div class="info-box">
+                <strong>Breakeven Calculation:</strong><br><br>
+                To maintain commission income of <strong>{fmt_smart(curr_comm)}</strong> after reducing fees from <strong>{current_rate:.1f} bps</strong> to <strong>{new_rate:.1f} bps</strong>:<br><br>
+                • Current: {fmt_smart(scenario_tv)} × {current_rate:.1f} bps = {fmt_smart(curr_comm)}<br>
+                • Required: {fmt_smart(tv_required)} × {new_rate:.1f} bps = {fmt_smart(curr_comm)}<br><br>
+                <strong>Traded value must increase by {fmt_smart(tv_increase_needed)} (+{tv_increase_pct:.1f}%)</strong> to offset the fee reduction.
+            </div>''', unsafe_allow_html=True)
     
     # ---------- TAB 2: Traded Value ----------
     with tab2:
