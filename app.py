@@ -724,7 +724,7 @@ def main():
             st.plotly_chart(fig_ear, use_container_width=True)
             
             # -- Full sensitivity table (all shocks at once) --
-            with st.expander("View full sensitivity table (all rate shocks)"):
+            with st.expander("📋  Full sensitivity table (all rate shocks)"):
                 all_shocks = [-200, -150, -100, -50, -25, 0, 25, 50, 100]
                 full_sens = []
                 for bp in all_shocks:
