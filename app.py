@@ -562,12 +562,10 @@ def main():
         
         # ========== EARNINGS-AT-RISK (P&L) ==========
         with risk_tab1:
-            st.markdown("#### Earnings-at-Risk: What happens to next 12 months investment income if rates change?")
-            st.markdown("*Includes only assets generating recurring investment income: deposits, amortised cost, FVTOCI debt (sukuk)*")
+            st.markdown("#### Earnings-at-Risk: If interest rates change, what happens to DFM's investment income?")
+            st.markdown("*Only assets generating recurring investment income: deposits, amortised cost (sukuk), FVTOCI debt (sukuk)*")
             
-            # -- Extracted values display --
-            st.markdown("##### Baseline — Extracted from Financial Statement")
-            
+            # -- Extract values --
             dep_bal = d.get('investment_deposits', 0)
             ac_bal = d.get('investments_amortised_cost', 0)
             sukuk_bal = d.get('fvtoci_sukuk', 0)
@@ -578,83 +576,128 @@ def main():
             fvtoci_inc = d.get('investment_income_fvtoci', 0)
             total_inc = d.get('investment_income', 0)
             
-            # Annualise income if period < 12
             pm = d.get('period_months', 12)
             ann_factor = 12 / pm if pm > 0 else 1
             
+            # Annualised incomes
+            dep_inc_ann = dep_inc * ann_factor
+            ac_inc_ann = ac_inc * ann_factor
+            fvtoci_inc_ann = fvtoci_inc * ann_factor
+            total_inc_ann = total_inc * ann_factor
+            
+            # Implied yields
+            dep_yield = (dep_inc_ann / dep_bal * 100) if dep_bal > 0 else 0
+            ac_yield = (ac_inc_ann / ac_bal * 100) if ac_bal > 0 else 0
+            sukuk_yield = (fvtoci_inc_ann / sukuk_bal * 100) if sukuk_bal > 0 else 0
+            total_yield = (total_inc_ann / ear_total * 100) if ear_total > 0 else 0
+            
+            # -- Baseline table --
+            st.markdown("##### Current Baseline (Extracted from Financial Statement)")
+            
             ear_df = pd.DataFrame({
-                'Asset Bucket': ['Investment Deposits', 'Amortised Cost (Sukuk)', 'FVTOCI Debt (Sukuk)', 'TOTAL EaR Portfolio'],
-                'Balance (AED\'000)': [f"{dep_bal:,.0f}", f"{ac_bal:,.0f}", f"{sukuk_bal:,.0f}", f"{ear_total:,.0f}"],
-                'Income ({0}M)'.format(pm): [
-                    f"{dep_inc:,.0f}" if dep_inc else "—",
-                    f"{ac_inc:,.0f}" if ac_inc else "—",
-                    f"{fvtoci_inc:,.0f}" if fvtoci_inc else "—",
-                    f"{total_inc:,.0f}",
-                ],
-                'Income (Annual)': [
-                    f"{dep_inc * ann_factor:,.0f}" if dep_inc else "—",
-                    f"{ac_inc * ann_factor:,.0f}" if ac_inc else "—",
-                    f"{fvtoci_inc * ann_factor:,.0f}" if fvtoci_inc else "—",
-                    f"{total_inc * ann_factor:,.0f}",
-                ],
-                'Source': ['Extracted', 'Extracted', 'Extracted', 'Extracted'],
+                'Asset Bucket': ['Investment Deposits', 'Amortised Cost (Sukuk)', 'FVTOCI Debt (Sukuk)', '**TOTAL**'],
+                'Balance': [fmt_smart(dep_bal), fmt_smart(ac_bal), fmt_smart(sukuk_bal), fmt_smart(ear_total)],
+                'Annual Income': [fmt_smart(dep_inc_ann), fmt_smart(ac_inc_ann), fmt_smart(fvtoci_inc_ann), fmt_smart(total_inc_ann)],
+                'Implied Yield': [f"{dep_yield:.2f}%", f"{ac_yield:.2f}%", f"{sukuk_yield:.2f}%", f"{total_yield:.2f}%"],
             })
             st.dataframe(ear_df, hide_index=True, use_container_width=True)
             
-            # -- Assumptions --
-            st.markdown("##### Assumptions")
-            ear_col1, ear_col2 = st.columns(2)
-            with ear_col1:
-                pct_sensitive = st.slider("% of deposits rate-sensitive", 50, 100, 100, 5, key="ear_pct")
-                implied_yield = (total_inc * ann_factor / ear_total * 100) if ear_total > 0 else 5.0
-                st.markdown(f'<div class="info-box"><strong>Implied portfolio yield:</strong> {implied_yield:.2f}%</div>', unsafe_allow_html=True)
-            
-            # -- Scenario table --
-            st.markdown("##### Rate Shock Scenarios")
-            
-            ann_income = total_inc * ann_factor
-            # Effective rate-sensitive base
+            # -- Assumption --
+            pct_sensitive = st.slider("% of deposits that are rate-sensitive", 50, 100, 100, 5, key="ear_pct")
             sensitive_deposits = dep_bal * pct_sensitive / 100
-            sensitive_base = sensitive_deposits + ac_bal + sukuk_bal
             
-            shock_bps = [-200, -150, -100, -50, -25, 0, 25, 50, 100]
-            ear_scenarios = []
-            for bp in shock_bps:
-                delta = sensitive_base * bp / 10000  # AED'000 impact
-                new_income = ann_income + delta
-                pct_change = (delta / ann_income * 100) if ann_income > 0 else 0
-                ear_scenarios.append({
-                    'Rate Shock': f"{bp:+d} bps",
-                    'Income Δ (AED\'000)': f"{delta:+,.0f}",
-                    'New Annual Income': f"{new_income:,.0f}",
-                    'Change %': f"{pct_change:+.1f}%",
-                })
+            # -- Rate shock selector --
+            st.markdown("##### Rate Shock Scenario")
             
-            st.dataframe(pd.DataFrame(ear_scenarios), hide_index=True, use_container_width=True)
+            shock_bp = st.select_slider(
+                "Select rate change (basis points)",
+                options=[-200, -150, -100, -50, -25, 0, 25, 50, 100],
+                value=-100,
+                key="ear_shock",
+            )
             
-            # -- Breakdown chart --
-            st.markdown("##### Income Impact by Bucket (−100 bps scenario)")
+            # Compute per-bucket impact
+            dep_delta = sensitive_deposits * shock_bp / 10000
+            ac_delta = ac_bal * shock_bp / 10000
+            sukuk_delta = sukuk_bal * shock_bp / 10000
+            total_delta = dep_delta + ac_delta + sukuk_delta
             
-            dep_delta = sensitive_deposits * (-100) / 10000
-            ac_delta = ac_bal * (-100) / 10000
-            sukuk_delta = sukuk_bal * (-100) / 10000
+            # New incomes
+            dep_new = dep_inc_ann + dep_delta
+            ac_new = ac_inc_ann + ac_delta
+            fvtoci_new = fvtoci_inc_ann + sukuk_delta
+            total_new = total_inc_ann + total_delta
             
+            # Pct changes
+            dep_pct = (dep_delta / dep_inc_ann * 100) if dep_inc_ann > 0 else 0
+            ac_pct = (ac_delta / ac_inc_ann * 100) if ac_inc_ann > 0 else 0
+            fvtoci_pct = (sukuk_delta / fvtoci_inc_ann * 100) if fvtoci_inc_ann > 0 else 0
+            total_pct = (total_delta / total_inc_ann * 100) if total_inc_ann > 0 else 0
+            
+            # Scenario table — matches baseline structure
+            scenario_df = pd.DataFrame({
+                'Asset Bucket': ['Investment Deposits', 'Amortised Cost (Sukuk)', 'FVTOCI Debt (Sukuk)', '**TOTAL**'],
+                'Current Income': [fmt_smart(dep_inc_ann), fmt_smart(ac_inc_ann), fmt_smart(fvtoci_inc_ann), fmt_smart(total_inc_ann)],
+                f'Impact ({shock_bp:+d} bps)': [fmt_smart(dep_delta), fmt_smart(ac_delta), fmt_smart(sukuk_delta), fmt_smart(total_delta)],
+                'New Income': [fmt_smart(dep_new), fmt_smart(ac_new), fmt_smart(fvtoci_new), fmt_smart(total_new)],
+                'Change': [f"{dep_pct:+.1f}%", f"{ac_pct:+.1f}%", f"{fvtoci_pct:+.1f}%", f"{total_pct:+.1f}%"],
+            })
+            st.dataframe(scenario_df, hide_index=True, use_container_width=True)
+            
+            # -- Summary metrics --
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Current Annual Income", fmt_smart(total_inc_ann))
+            m2.metric(f"Income Impact ({shock_bp:+d} bps)", fmt_smart(total_delta), f"{total_pct:+.1f}%", delta_color="normal")
+            m3.metric("New Annual Income", fmt_smart(total_new))
+            
+            # -- Chart: Baseline vs Scenario by bucket --
             fig_ear = go.Figure()
+            buckets = ['Deposits', 'Amortised Cost', 'FVTOCI Sukuk', 'Total']
+            baseline_vals = [dep_inc_ann / 1000, ac_inc_ann / 1000, fvtoci_inc_ann / 1000, total_inc_ann / 1000]
+            scenario_vals = [dep_new / 1000, ac_new / 1000, fvtoci_new / 1000, total_new / 1000]
+            
             fig_ear.add_trace(go.Bar(
-                x=['Deposits', 'Amortised Cost', 'FVTOCI Sukuk', 'Total'],
-                y=[dep_delta / 1000, ac_delta / 1000, sukuk_delta / 1000, (dep_delta + ac_delta + sukuk_delta) / 1000],
-                marker_color=['#DC3545', '#DC3545', '#DC3545', '#0066CC'],
-                text=[fmt_smart(dep_delta), fmt_smart(ac_delta), fmt_smart(sukuk_delta), fmt_smart(dep_delta + ac_delta + sukuk_delta)],
+                name='Current Income',
+                x=buckets, y=baseline_vals,
+                marker_color='#0066CC',
+                text=[fmt_smart(dep_inc_ann), fmt_smart(ac_inc_ann), fmt_smart(fvtoci_inc_ann), fmt_smart(total_inc_ann)],
+                textposition='outside',
+            ))
+            fig_ear.add_trace(go.Bar(
+                name=f'After {shock_bp:+d} bps',
+                x=buckets, y=scenario_vals,
+                marker_color='#DC3545' if shock_bp < 0 else '#28A745',
+                text=[fmt_smart(dep_new), fmt_smart(ac_new), fmt_smart(fvtoci_new), fmt_smart(total_new)],
                 textposition='outside',
             ))
             fig_ear.update_layout(
-                title="Earnings Impact: −100 bps Rate Cut",
-                height=350,
+                title=f"Investment Income: Current vs {shock_bp:+d} bps Scenario",
+                barmode='group',
+                height=400,
                 plot_bgcolor='white',
                 yaxis_title='AED Millions',
-                showlegend=False,
             )
             st.plotly_chart(fig_ear, use_container_width=True)
+            
+            # -- Full sensitivity table (all shocks at once) --
+            with st.expander("View full sensitivity table (all rate shocks)"):
+                all_shocks = [-200, -150, -100, -50, -25, 0, 25, 50, 100]
+                full_sens = []
+                for bp in all_shocks:
+                    d_dep = sensitive_deposits * bp / 10000
+                    d_ac = ac_bal * bp / 10000
+                    d_sk = sukuk_bal * bp / 10000
+                    d_tot = d_dep + d_ac + d_sk
+                    full_sens.append({
+                        'Rate Shock': f"{bp:+d} bps",
+                        'Deposits Impact': fmt_smart(d_dep),
+                        'AC Impact': fmt_smart(d_ac),
+                        'Sukuk Impact': fmt_smart(d_sk),
+                        'Total Impact': fmt_smart(d_tot),
+                        'New Total Income': fmt_smart(total_inc_ann + d_tot),
+                        'Change': f"{(d_tot / total_inc_ann * 100):+.1f}%" if total_inc_ann > 0 else "—",
+                    })
+                st.dataframe(pd.DataFrame(full_sens), hide_index=True, use_container_width=True)
         
         # ========== VALUE-AT-RISK (OCI / P&L) ==========
         with risk_tab2:
