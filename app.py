@@ -1,12 +1,17 @@
 """
-DFM Scenario Analysis Tool v3.4
-Dubai Financial Market - Earnings Sensitivity Analysis
+DFM Scenario Analysis Tool v4.0 (FS1)
+Dubai Financial Market - Earnings & Investment Risk Sensitivity Analysis
 """
 
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import re
+
+from parsers.pdf_financials import (
+    parse_pdf_financials,
+    compute_portfolio_from_metrics,
+    compute_ear_portfolio,
+)
 
 st.set_page_config(page_title="DFM Scenario Analysis", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 
@@ -36,6 +41,11 @@ DEFAULT = {
     'investment_income': 165_348,
     'investment_deposits': 4_134_622,
     'investments_amortised_cost': 367_717,
+    'fvtoci': 1_411_836,
+    'fvtoci_equity': 1_111_095,
+    'fvtoci_funds': 25_146,
+    'fvtoci_sukuk': 275_595,
+    'dividend_income': 51_521,
     'total_traded_value': 165_000_000,  # AED 165B in thousands
     'period_months': 9,
     'trading_days': 252,
@@ -94,53 +104,20 @@ def fmt_smart_raw(val_aed):
         return "N/A"
 
 def parse_pdf(file):
-    """Parse financial statement PDF"""
+    """Parse financial statement PDF using the parsers module."""
     try:
-        import pdfplumber
-    except ImportError:
-        st.warning("pdfplumber not installed")
-        return None
-    
-    data = {'items': []}
-    try:
-        with pdfplumber.open(file) as pdf:
-            text = "".join([p.extract_text() or "" for p in pdf.pages])
-            
-            # Trading commission - 9-month figure (value is in AED thousands)
-            m = re.search(r'Trading commission fees\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)', text, re.I)
-            if m:
-                data['trading_commission'] = float(m.group(3).replace(',', ''))
-                data['items'].append(f"Trading Comm: {fmt_smart(data['trading_commission'])}")
-            
-            # Investment income - 9-month figure
-            m = re.search(r'Investment income\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)', text, re.I)
-            if m:
-                data['investment_income'] = float(m.group(3).replace(',', ''))
-                data['items'].append(f"Inv Income: {fmt_smart(data['investment_income'])}")
-            
-            # Investment Portfolio (deposits)
-            m = re.search(r'Investment deposits\s+\d+\s+([\d,]+)', text, re.I)
-            if m:
-                data['investment_deposits'] = float(m.group(1).replace(',', ''))
-                data['items'].append(f"Investment Deposits (cash at banks): {fmt_smart(data['investment_deposits'])}")
-            
-            # Investments at amortised cost (sukuks/bonds)
-            m = re.search(r'Investments at amortised cost\s+\d+\s+([\d,]+)', text, re.I)
-            if m:
-                data['investments_amortised_cost'] = float(m.group(1).replace(',', ''))
-                data['items'].append(f"Investments at Amortised Cost (sukuk & bonds): {fmt_smart(data['investments_amortised_cost'])}")
-            
-            # Period
-            if 'nine-month' in text.lower(): data['period_months'] = 9
-            elif 'six-month' in text.lower(): data['period_months'] = 6
-            elif 'year ended' in text.lower(): data['period_months'] = 12
-            else: data['period_months'] = 9
-            
+        result = parse_pdf_financials(file)
+        # Return in the format app.py expects: flat dict with metrics + items
+        data = dict(result['metrics'])
+        data['items'] = result.get('items', [])
+        data['audit'] = result.get('audit', [])
+        data['note20'] = result.get('note20', {})
+        data['note8'] = result.get('note8', {})
+        data['warnings'] = result.get('warnings', [])
+        return data if data.get('items') else None
     except Exception as e:
         st.error(f"PDF parsing error: {e}")
         return None
-    
-    return data if data.get('items') else None
 
 def parse_excel(file):
     """Parse bulletin Excel - returns value in AED thousands"""
@@ -238,7 +215,16 @@ def main():
     d = DEFAULT.copy()
     
     if fs:
-        for key in ['trading_commission', 'investment_income', 'investment_deposits', 'investments_amortised_cost', 'period_months']:
+        # Copy all extracted metrics into d
+        fs_keys = [
+            'trading_commission', 'investment_income', 'dividend_income',
+            'finance_income', 'investment_deposits', 'investments_amortised_cost',
+            'fvtoci', 'fvtoci_equity', 'fvtoci_funds', 'fvtoci_sukuk',
+            'cash_and_equivalents', 'period_months',
+            'investment_income_deposits', 'investment_income_amortised_cost',
+            'investment_income_fvtoci',
+        ]
+        for key in fs_keys:
             if key in fs and fs[key]:
                 d[key] = fs[key]
     
@@ -246,7 +232,8 @@ def main():
         d['total_traded_value'] = bul['total_traded_value']
     
     # Calculate derived values (all in thousands)
-    d['portfolio'] = d['investment_deposits'] + d['investments_amortised_cost']
+    d['portfolio'] = d['investment_deposits'] + d['investments_amortised_cost'] + d.get('fvtoci', 0)
+    d['ear_portfolio'] = d['investment_deposits'] + d['investments_amortised_cost'] + d.get('fvtoci_sukuk', 0)
     d['adtv'] = d['total_traded_value'] / d['trading_days']
     d['comm_annual'] = d['trading_commission'] * 12 / d['period_months']
     d['inv_annual'] = d['investment_income'] * 12 / d['period_months']
@@ -276,7 +263,12 @@ def main():
     c1, c2 = st.columns(2)
     with c1:
         if fs:
-            st.markdown(f'<div class="success-box"><strong>✅ Financial Statement</strong><br>{"<br>".join(fs.get("items", []))}</div>', unsafe_allow_html=True)
+            items_html = "<br>".join(fs.get("items", []))
+            # Show warnings if any
+            warn_html = ""
+            for w in fs.get("warnings", []):
+                warn_html += f'<br><span style="color:#FF9800">⚠️ {w}</span>'
+            st.markdown(f'<div class="success-box"><strong>✅ Financial Statement</strong><br>{items_html}{warn_html}</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="warning-box"><strong>⚠️ No FS uploaded</strong><br>Using Q3 2025 defaults</div>', unsafe_allow_html=True)
     with c2:
@@ -288,7 +280,7 @@ def main():
     # ========== METRICS ==========
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     st.markdown("### 📋 Baseline Metrics")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.markdown(f'''<div class="metric-card-highlight">
             <div class="metric-label">Trading Commission ({d["period_months"]}M)</div>
@@ -305,7 +297,7 @@ def main():
         st.markdown(f'''<div class="metric-card-highlight">
             <div class="metric-label">Investment Portfolio</div>
             <div class="metric-value-blue">{fmt_smart(d["portfolio"])}</div>
-            <div style="color:#666;font-size:0.75rem">Deposits + Sukuks</div>
+            <div style="color:#666;font-size:0.75rem">Deposits + AC + FVTOCI</div>
         </div>''', unsafe_allow_html=True)
     with c4:
         st.markdown(f'''<div class="metric-card-highlight">
@@ -313,11 +305,18 @@ def main():
             <div class="metric-value-blue">{fmt_smart(d["investment_income"])}</div>
             <div style="color:#666;font-size:0.75rem">Annual: {fmt_smart(d["inv_annual"])}</div>
         </div>''', unsafe_allow_html=True)
+    with c5:
+        div_inc = d.get('dividend_income', 0)
+        st.markdown(f'''<div class="metric-card-highlight">
+            <div class="metric-label">Dividend Income ({d["period_months"]}M)</div>
+            <div class="metric-value-blue">{fmt_smart(div_inc)}</div>
+            <div style="color:#666;font-size:0.75rem">FVTOCI equity dividends</div>
+        </div>''', unsafe_allow_html=True)
     
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
     
     # ========== SCENARIO TABS ==========
-    tab1, tab2, tab3, tab4 = st.tabs(["📉 Commission Fee", "📊 Traded Value", "💰 Interest Rate", "🔄 Combined"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📉 Commission Fee", "📊 Traded Value", "💰 Interest Rate", "🔄 Combined", "🏦 Investment Risk"])
     
     # ---------- TAB 1: Commission Fee ----------
     with tab1:
@@ -453,15 +452,15 @@ def main():
     # ---------- TAB 3: Interest Rate ----------
     with tab3:
         st.markdown("### Interest Rate Scenario")
-        st.markdown("*What if interest rates change?*")
+        st.markdown("*What if interest rates change? Uses Earnings-at-Risk portfolio (deposits + amortised cost + FVTOCI sukuk)*")
         
         col_in, col_out = st.columns([1, 2])
         
         with col_in:
             st.markdown("#### Scenario Inputs")
             
-            port_b = d['portfolio'] / 1_000_000
-            portfolio = st.number_input("Portfolio (AED B)", 0.5, 20.0, clamp(port_b, 0.5, 20.0, 4.5), 0.1, key="t3_port") * 1_000_000
+            port_b = d['ear_portfolio'] / 1_000_000
+            portfolio = st.number_input("EaR Portfolio (AED B)", 0.5, 20.0, clamp(port_b, 0.5, 20.0, 4.9), 0.1, key="t3_port") * 1_000_000
             
             cur_rate = st.number_input("Current Rate (%)", 0.0, 15.0, 5.0, 0.25, key="t3_cur_rate")
             
@@ -508,8 +507,8 @@ def main():
             comb_tv = st.number_input("Traded Value (AED B)", 1.0, 1000.0, clamp(tv_b, 1.0, 1000.0, 165.0), 5.0, key="t4_tv") * 1_000_000
             comb_rate = st.number_input("Comm Rate (bps)", 1.0, 100.0, clamp(d['comm_rate'], 1.0, 100.0, 25.0), 0.5, key="t4_rate")
             
-            port_b = d['portfolio'] / 1_000_000
-            comb_port = st.number_input("Portfolio (AED B)", 0.5, 20.0, clamp(port_b, 0.5, 20.0, 4.5), 0.1, key="t4_port") * 1_000_000
+            port_b = d['ear_portfolio'] / 1_000_000
+            comb_port = st.number_input("EaR Portfolio (AED B)", 0.5, 20.0, clamp(port_b, 0.5, 20.0, 4.9), 0.1, key="t4_port") * 1_000_000
             comb_ir = st.number_input("Interest Rate (%)", 0.0, 15.0, 5.0, 0.25, key="t4_ir")
         
         with col_out:
@@ -554,9 +553,212 @@ def main():
             fig.update_layout(title="Revenue Bridge", height=350, plot_bgcolor='white', yaxis_title="AED Millions", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
     
+    # ---------- TAB 5: Investment Portfolio Risk ----------
+    with tab5:
+        st.markdown("### Investment Portfolio Risk Analysis")
+        st.markdown("*Two complementary risk lenses for DFM's investment portfolio*")
+        
+        risk_tab1, risk_tab2 = st.tabs(["📈 Earnings Sensitivity (Income)", "📉 Market Value Sensitivity (OCI/P&L)"])
+        
+        # ========== EARNINGS-AT-RISK (P&L) ==========
+        with risk_tab1:
+            st.markdown("#### Earnings-at-Risk: What happens to next 12 months investment income if rates change?")
+            st.markdown("*Includes only assets generating recurring investment income: deposits, amortised cost, FVTOCI debt (sukuk)*")
+            
+            # -- Extracted values display --
+            st.markdown("##### Baseline — Extracted from Financial Statement")
+            
+            dep_bal = d.get('investment_deposits', 0)
+            ac_bal = d.get('investments_amortised_cost', 0)
+            sukuk_bal = d.get('fvtoci_sukuk', 0)
+            ear_total = dep_bal + ac_bal + sukuk_bal
+            
+            dep_inc = d.get('investment_income_deposits', 0)
+            ac_inc = d.get('investment_income_amortised_cost', 0)
+            fvtoci_inc = d.get('investment_income_fvtoci', 0)
+            total_inc = d.get('investment_income', 0)
+            
+            # Annualise income if period < 12
+            pm = d.get('period_months', 12)
+            ann_factor = 12 / pm if pm > 0 else 1
+            
+            ear_df = pd.DataFrame({
+                'Asset Bucket': ['Investment Deposits', 'Amortised Cost (Sukuk)', 'FVTOCI Debt (Sukuk)', 'TOTAL EaR Portfolio'],
+                'Balance (AED\'000)': [f"{dep_bal:,.0f}", f"{ac_bal:,.0f}", f"{sukuk_bal:,.0f}", f"{ear_total:,.0f}"],
+                'Income ({0}M)'.format(pm): [
+                    f"{dep_inc:,.0f}" if dep_inc else "—",
+                    f"{ac_inc:,.0f}" if ac_inc else "—",
+                    f"{fvtoci_inc:,.0f}" if fvtoci_inc else "—",
+                    f"{total_inc:,.0f}",
+                ],
+                'Income (Annual)': [
+                    f"{dep_inc * ann_factor:,.0f}" if dep_inc else "—",
+                    f"{ac_inc * ann_factor:,.0f}" if ac_inc else "—",
+                    f"{fvtoci_inc * ann_factor:,.0f}" if fvtoci_inc else "—",
+                    f"{total_inc * ann_factor:,.0f}",
+                ],
+                'Source': ['Extracted', 'Extracted', 'Extracted', 'Extracted'],
+            })
+            st.dataframe(ear_df, hide_index=True, use_container_width=True)
+            
+            # -- Assumptions --
+            st.markdown("##### Assumptions")
+            ear_col1, ear_col2 = st.columns(2)
+            with ear_col1:
+                pct_sensitive = st.slider("% of deposits rate-sensitive", 50, 100, 100, 5, key="ear_pct")
+                implied_yield = (total_inc * ann_factor / ear_total * 100) if ear_total > 0 else 5.0
+                st.markdown(f'<div class="info-box"><strong>Implied portfolio yield:</strong> {implied_yield:.2f}%</div>', unsafe_allow_html=True)
+            
+            # -- Scenario table --
+            st.markdown("##### Rate Shock Scenarios")
+            
+            ann_income = total_inc * ann_factor
+            # Effective rate-sensitive base
+            sensitive_deposits = dep_bal * pct_sensitive / 100
+            sensitive_base = sensitive_deposits + ac_bal + sukuk_bal
+            
+            shock_bps = [-200, -150, -100, -50, -25, 0, 25, 50, 100]
+            ear_scenarios = []
+            for bp in shock_bps:
+                delta = sensitive_base * bp / 10000  # AED'000 impact
+                new_income = ann_income + delta
+                pct_change = (delta / ann_income * 100) if ann_income > 0 else 0
+                ear_scenarios.append({
+                    'Rate Shock': f"{bp:+d} bps",
+                    'Income Δ (AED\'000)': f"{delta:+,.0f}",
+                    'New Annual Income': f"{new_income:,.0f}",
+                    'Change %': f"{pct_change:+.1f}%",
+                })
+            
+            st.dataframe(pd.DataFrame(ear_scenarios), hide_index=True, use_container_width=True)
+            
+            # -- Breakdown chart --
+            st.markdown("##### Income Impact by Bucket (−100 bps scenario)")
+            
+            dep_delta = sensitive_deposits * (-100) / 10000
+            ac_delta = ac_bal * (-100) / 10000
+            sukuk_delta = sukuk_bal * (-100) / 10000
+            
+            fig_ear = go.Figure()
+            fig_ear.add_trace(go.Bar(
+                x=['Deposits', 'Amortised Cost', 'FVTOCI Sukuk', 'Total'],
+                y=[dep_delta / 1000, ac_delta / 1000, sukuk_delta / 1000, (dep_delta + ac_delta + sukuk_delta) / 1000],
+                marker_color=['#DC3545', '#DC3545', '#DC3545', '#0066CC'],
+                text=[fmt_smart(dep_delta), fmt_smart(ac_delta), fmt_smart(sukuk_delta), fmt_smart(dep_delta + ac_delta + sukuk_delta)],
+                textposition='outside',
+            ))
+            fig_ear.update_layout(
+                title="Earnings Impact: −100 bps Rate Cut",
+                height=350,
+                plot_bgcolor='white',
+                yaxis_title='AED Millions',
+                showlegend=False,
+            )
+            st.plotly_chart(fig_ear, use_container_width=True)
+        
+        # ========== VALUE-AT-RISK (OCI / P&L) ==========
+        with risk_tab2:
+            st.markdown("#### Market Value Sensitivity: What happens to OCI/equity if markets move?")
+            st.markdown("*FVTOCI equity: equity market shocks → OCI impact | FVTOCI debt: rate shocks via duration → OCI impact*")
+            
+            # -- Extracted values display --
+            st.markdown("##### Baseline — Extracted from Financial Statement")
+            
+            eq_bal = d.get('fvtoci_equity', 0)
+            fund_bal = d.get('fvtoci_funds', 0)
+            sukuk_bal_v = d.get('fvtoci_sukuk', 0)
+            fvtoci_total = d.get('fvtoci', 0)
+            
+            var_df = pd.DataFrame({
+                'FVTOCI Category': ['Equity Securities', 'Managed Funds', 'Sukuk (Debt)', 'TOTAL FVTOCI'],
+                'Balance (AED\'000)': [f"{eq_bal:,.0f}", f"{fund_bal:,.0f}", f"{sukuk_bal_v:,.0f}", f"{fvtoci_total:,.0f}"],
+                'Sensitivity Driver': ['Equity market shock', 'Equity market shock', 'Rate shock × duration', '—'],
+                'Impact Channel': ['OCI', 'OCI', 'OCI', '—'],
+                'Source': [
+                    'Extracted' if eq_bal > 0 else 'Default',
+                    'Extracted' if fund_bal > 0 else 'Default',
+                    'Extracted' if sukuk_bal_v > 0 else 'Default',
+                    '',
+                ],
+            })
+            st.dataframe(var_df, hide_index=True, use_container_width=True)
+            
+            # -- Assumptions --
+            st.markdown("##### Assumptions")
+            var_col1, var_col2 = st.columns(2)
+            with var_col1:
+                duration = st.number_input("FVTOCI debt duration (years)", 0.5, 10.0, 2.0, 0.5, key="var_dur")
+                st.caption("*Duration assumption — user editable*")
+            with var_col2:
+                st.markdown(f'''<div class="info-box">
+                    <strong>Note:</strong> Duration is not available in the PDF. 
+                    Default = 2.0 years (typical for short-medium sukuk). 
+                    Adjust based on DFM's actual portfolio WAL.
+                </div>''', unsafe_allow_html=True)
+            
+            # -- Equity shock scenarios --
+            st.markdown("##### A) Equity Market Shock → OCI Impact")
+            
+            equity_exposed = eq_bal + fund_bal  # both are equity-like
+            
+            eq_shocks = [-30, -20, -10, -5, 0, 5, 10, 20]
+            eq_scenarios = []
+            for pct in eq_shocks:
+                delta = equity_exposed * pct / 100
+                eq_scenarios.append({
+                    'Equity Shock': f"{pct:+d}%",
+                    'FVTOCI Equity Δ (AED\'000)': f"{delta:+,.0f}",
+                    'OCI Impact': fmt_smart(delta),
+                })
+            
+            st.dataframe(pd.DataFrame(eq_scenarios), hide_index=True, use_container_width=True)
+            
+            # -- Rate shock on FVTOCI debt --
+            st.markdown("##### B) Interest Rate Shock → FVTOCI Debt OCI Impact")
+            st.markdown(f"*Using modified duration = {duration:.1f} years | FVTOCI sukuk balance = {fmt_smart(sukuk_bal_v)}*")
+            
+            rate_shocks = [-200, -100, -50, 0, 50, 100, 200]
+            rate_scenarios = []
+            for bp in rate_shocks:
+                # Price change ≈ -duration × Δrate
+                price_delta_pct = -duration * (bp / 100)  # bp/100 = percentage point change
+                oci_delta = sukuk_bal_v * price_delta_pct / 100
+                rate_scenarios.append({
+                    'Rate Shock': f"{bp:+d} bps",
+                    'Price Δ (%)': f"{price_delta_pct:+.1f}%",
+                    'OCI Impact (AED\'000)': f"{oci_delta:+,.0f}",
+                    'OCI Impact': fmt_smart(abs(oci_delta)) if oci_delta != 0 else "—",
+                })
+            
+            st.dataframe(pd.DataFrame(rate_scenarios), hide_index=True, use_container_width=True)
+            
+            # -- Combined chart --
+            st.markdown("##### Combined Stress Scenario: Equity -20% + Rates +100 bps")
+            
+            eq_stress = equity_exposed * (-20) / 100
+            rate_stress = sukuk_bal_v * (-duration * 1) / 100  # +100bps, price falls
+            total_stress = eq_stress + rate_stress
+            
+            fig_var = go.Figure()
+            fig_var.add_trace(go.Bar(
+                x=['FVTOCI Equity\n(-20% shock)', 'FVTOCI Debt\n(+100bps)', 'Total OCI Impact'],
+                y=[eq_stress / 1000, rate_stress / 1000, total_stress / 1000],
+                marker_color=['#DC3545', '#FF9800', '#0066CC'],
+                text=[fmt_smart(eq_stress), fmt_smart(rate_stress), fmt_smart(total_stress)],
+                textposition='outside',
+            ))
+            fig_var.update_layout(
+                title="OCI Stress Test: Equity -20% + Rates +100bps",
+                height=350,
+                plot_bgcolor='white',
+                yaxis_title='AED Millions',
+                showlegend=False,
+            )
+            st.plotly_chart(fig_var, use_container_width=True)
+    
     # Footer
     st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-    st.caption("**Data:** Upload files for latest data, or uses Q3 2025 defaults | **Disclaimer:** For internal analysis only")
+    st.caption("**Data:** Upload files for latest data, or uses Q3 2025 defaults | **Version:** v4.0 (FS1) | **Disclaimer:** For internal analysis only")
 
 if __name__ == "__main__":
     main()
