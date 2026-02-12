@@ -321,85 +321,129 @@ def main():
     # ---------- TAB 1: Commission Fee ----------
     with tab1:
         st.markdown("### Commission Fee Scenario")
-        st.markdown("*What if trading commission rates change?*")
+        st.markdown("*Model fee reductions and calculate the traded value needed to offset the impact*")
         
-        col_in, col_out = st.columns([1, 2])
+        # -- Fee Structure (informational) --
+        st.markdown("##### DFM Market Fee Structure (ex-VAT)")
         
-        with col_in:
-            st.markdown("#### Scenario Inputs")
-            
-            # Convert thousands to billions for user input
-            tv_billions = d['total_traded_value'] / 1_000_000
-            scenario_tv_b = st.number_input(
-                "Annual Traded Value (AED Billions)", 
-                min_value=1.0, max_value=1000.0, 
-                value=clamp(tv_billions, 1.0, 1000.0, 165.0),
-                step=5.0, key="t1_tv"
-            )
-            scenario_tv = scenario_tv_b * 1_000_000  # Back to thousands
-            
-            current_rate = st.number_input(
-                "Current Rate (bps)", 
-                min_value=1.0, max_value=100.0, 
-                value=clamp(d['comm_rate'], 1.0, 100.0, 25.0),
-                step=0.5, key="t1_cur"
-            )
-            
-            new_rate = st.number_input(
-                "New Rate (bps)", 
-                min_value=1.0, max_value=100.0, 
-                value=20.0, step=0.5, key="t1_new"
-            )
+        fee_col1, fee_col2 = st.columns([2, 1])
         
-        with col_out:
-            st.markdown("#### Impact Analysis")
+        with fee_col1:
+            # Editable fee components
+            st.markdown("Adjust any component to model a fee change:")
             
-            curr_comm = calc_comm(scenario_tv, current_rate)
-            new_comm = calc_comm(scenario_tv, new_rate)
-            diff = new_comm - curr_comm
-            pct_str = f"{(diff / curr_comm * 100):+.1f}%" if curr_comm > 0 else "—"
+            fc1, fc2, fc3, fc4 = st.columns(4)
+            with fc1:
+                broker_bps = st.number_input("Broker (bps)", 0.0, 50.0, 12.5, 0.5, key="fee_broker")
+            with fc2:
+                market_bps = st.number_input("Market (bps)", 0.0, 50.0, 5.0, 0.5, key="fee_market")
+            with fc3:
+                sca_bps = st.number_input("SCA (bps)", 0.0, 50.0, 5.0, 0.5, key="fee_sca")
+            with fc4:
+                cds_bps = st.number_input("CDS (bps)", 0.0, 50.0, 5.0, 0.5, key="fee_cds")
             
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Current Income", fmt_smart(curr_comm))
-            m2.metric("Scenario Income", fmt_smart(new_comm), f"{new_rate - current_rate:+.1f} bps")
-            m3.metric("Annual Impact", fmt_smart(diff), pct_str, delta_color="normal")
-            
-            # Chart
-            fig = go.Figure()
-            fig.add_trace(go.Bar(name='Current', x=['Commission Income'], y=[curr_comm/1000], marker_color='#0066CC', text=[fmt_smart(curr_comm)], textposition='outside'))
-            fig.add_trace(go.Bar(name='Scenario', x=['Commission Income'], y=[new_comm/1000], marker_color='#66B2FF', text=[fmt_smart(new_comm)], textposition='outside'))
-            fig.update_layout(barmode='group', height=300, plot_bgcolor='white', yaxis_title='AED Millions', showlegend=True)
-            st.plotly_chart(fig, use_container_width=True)
+            current_total_bps = 27.5  # fixed: current market total
+            new_total_bps = broker_bps + market_bps + sca_bps + cds_bps
+            fee_reduction_bps = new_total_bps - current_total_bps
         
-        # ---------- OFFSET CALCULATION ----------
-        if new_rate < current_rate and new_rate > 0:
-            st.markdown("---")
-            st.markdown("#### 📊 Breakeven Analysis: How Much Must Traded Value Increase?")
-            
-            # Calculate: To maintain current commission with new rate, what traded value is needed?
-            # Formula: TV_required = V_current × (current_rate / new_rate)
-            tv_required = scenario_tv * (current_rate / new_rate)  # in thousands
-            tv_increase_needed = tv_required - scenario_tv  # in thousands
-            tv_increase_pct = (tv_increase_needed / scenario_tv * 100) if scenario_tv > 0 else 0
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Current Traded Value", fmt_smart(scenario_tv))
-            with col2:
-                st.metric("Required Traded Value", fmt_smart(tv_required), "to maintain income")
-            with col3:
-                st.metric("Volume Increase Needed", fmt_smart(tv_increase_needed), f"+{tv_increase_pct:.1f}%")
-            
-            # Explanation box
-            st.markdown(f'''<div class="info-box">
-                <strong>Breakeven Calculation:</strong><br><br>
-                To maintain commission income of <strong>{fmt_smart(curr_comm)}</strong> after reducing fees from <strong>{current_rate:.1f} bps</strong> to <strong>{new_rate:.1f} bps</strong>:<br><br>
-                • Current: {fmt_smart(scenario_tv)} × {current_rate:.1f} bps = {fmt_smart(curr_comm)}<br>
-                • Required: {fmt_smart(tv_required)} × {new_rate:.1f} bps = {fmt_smart(curr_comm)}<br><br>
-                <strong>Traded value must increase by {fmt_smart(tv_increase_needed)} (+{tv_increase_pct:.1f}%)</strong> to offset the fee reduction.
+        with fee_col2:
+            st.markdown(f'''<div class="metric-card-highlight">
+                <div class="metric-label">Current Total Fee</div>
+                <div class="metric-value-blue">27.5 bps</div>
+                <div style="color:#666;font-size:0.75rem;margin-top:0.5rem">New Total Fee</div>
+                <div style="color:{'#DC3545' if new_total_bps < current_total_bps else '#28A745' if new_total_bps > current_total_bps else '#0066CC'};font-size:1.5rem;font-weight:600;font-family:monospace">{new_total_bps:.1f} bps</div>
+                <div style="color:#666;font-size:0.75rem">{fee_reduction_bps:+.1f} bps change</div>
             </div>''', unsafe_allow_html=True)
-        elif new_rate <= 0:
-            st.error("⚠️ New rate must be greater than 0 bps")
+        
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+        
+        # -- Compute DFM's effective rate --
+        tv_billions = d['total_traded_value'] / 1_000_000
+        scenario_tv = d['total_traded_value']  # in thousands
+        current_dfm_rate = d['comm_rate']  # bps, computed from actuals
+        adtv = d['adtv']  # in thousands
+        curr_comm = d['comm_annual']  # annualised, in thousands
+        
+        # DFM's new rate: proportional to total market fee change
+        # If total market drops from 27.5 to 20, DFM rate drops by same ratio
+        if current_total_bps > 0:
+            rate_ratio = new_total_bps / current_total_bps
+        else:
+            rate_ratio = 1.0
+        new_dfm_rate = current_dfm_rate * rate_ratio
+        
+        # New commission income
+        new_comm = calc_comm(scenario_tv, new_dfm_rate)
+        diff = new_comm - curr_comm
+        pct_change = (diff / curr_comm * 100) if curr_comm > 0 else 0
+        
+        # -- Impact Analysis --
+        st.markdown("##### Impact on DFM Commission Income")
+        
+        impact_df = pd.DataFrame({
+            'Metric': ['Total Market Fee', 'DFM Effective Rate', 'Annual Traded Value', 'ADTV', 'Annual Commission Income'],
+            'Current': [
+                f"{current_total_bps:.1f} bps",
+                f"{current_dfm_rate:.1f} bps",
+                fmt_smart(scenario_tv),
+                fmt_smart(adtv),
+                fmt_smart(curr_comm),
+            ],
+            'Scenario': [
+                f"{new_total_bps:.1f} bps",
+                f"{new_dfm_rate:.1f} bps",
+                fmt_smart(scenario_tv),
+                fmt_smart(adtv),
+                fmt_smart(new_comm),
+            ],
+            'Change': [
+                f"{fee_reduction_bps:+.1f} bps",
+                f"{new_dfm_rate - current_dfm_rate:+.1f} bps",
+                "—",
+                "—",
+                fmt_smart(diff),
+            ],
+        })
+        st.dataframe(impact_df, hide_index=True, use_container_width=True)
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Current Commission Income", fmt_smart(curr_comm))
+        m2.metric("Scenario Commission Income", fmt_smart(new_comm), f"{fee_reduction_bps:+.1f} bps")
+        m3.metric("Annual Impact", fmt_smart(diff), f"{pct_change:+.1f}%", delta_color="normal")
+        
+        # -- Breakeven ADTV --
+        if new_total_bps < current_total_bps and new_dfm_rate > 0:
+            st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+            st.markdown("##### Breakeven Analysis: How Much Must Traded Value Increase?")
+            
+            tv_required = scenario_tv * (current_dfm_rate / new_dfm_rate)
+            tv_increase = tv_required - scenario_tv
+            tv_increase_pct = (tv_increase / scenario_tv * 100) if scenario_tv > 0 else 0
+            
+            adtv_required = tv_required / d['trading_days']
+            adtv_increase = adtv_required - adtv
+            
+            be_df = pd.DataFrame({
+                'Metric': ['Annual Traded Value', 'Avg Daily Traded Value (ADTV)'],
+                'Current': [fmt_smart(scenario_tv), fmt_smart(adtv)],
+                'Required': [fmt_smart(tv_required), fmt_smart(adtv_required)],
+                'Increase Needed': [
+                    f"{fmt_smart(tv_increase)} (+{tv_increase_pct:.1f}%)",
+                    f"{fmt_smart(adtv_increase)} (+{tv_increase_pct:.1f}%)",
+                ],
+            })
+            st.dataframe(be_df, hide_index=True, use_container_width=True)
+            
+            st.markdown(f'''<div class="info-box">
+                <strong>To maintain {fmt_smart(curr_comm)} commission income</strong> after a fee cut from {current_total_bps:.1f} to {new_total_bps:.1f} bps:<br><br>
+                ADTV must increase from <strong>{fmt_smart(adtv)}</strong> to <strong>{fmt_smart(adtv_required)}</strong> — a <strong>+{tv_increase_pct:.1f}%</strong> increase in market activity.
+            </div>''', unsafe_allow_html=True)
+        
+        elif new_total_bps >= current_total_bps:
+            if new_total_bps > current_total_bps:
+                st.markdown(f'''<div class="success-box">
+                    Fee increase of {fee_reduction_bps:+.1f} bps generates additional commission income of <strong>{fmt_smart(diff)}</strong> per year at current traded value levels.
+                </div>''', unsafe_allow_html=True)
     
     # ---------- TAB 2: Traded Value ----------
     with tab2:
