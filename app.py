@@ -746,26 +746,26 @@ def main():
         # ========== VALUE-AT-RISK (OCI / P&L) ==========
         with risk_tab2:
             st.markdown("#### Market Value Sensitivity: What happens to OCI/equity if markets move?")
-            st.markdown("*FVTOCI equity: equity market shocks → OCI impact | FVTOCI debt: rate shocks via duration → OCI impact*")
+            st.markdown("*Only FVTOCI assets (AED 1.47B) are carried at fair value. Deposits and amortised cost assets (AED 4.58B) are not revalued — no OCI impact.*")
             
             # -- Extracted values display --
-            st.markdown("##### Baseline — Extracted from Financial Statement")
+            st.markdown("##### Baseline — FVTOCI Portfolio (Extracted from Financial Statement)")
             
             eq_bal = d.get('fvtoci_equity', 0)
             fund_bal = d.get('fvtoci_funds', 0)
             sukuk_bal_v = d.get('fvtoci_sukuk', 0)
             fvtoci_total = d.get('fvtoci', 0)
+            equity_exposed = eq_bal + fund_bal
             
             var_df = pd.DataFrame({
-                'FVTOCI Category': ['Equity Securities', 'Managed Funds', 'Sukuk (Debt)', 'TOTAL FVTOCI'],
-                'Balance (AED\'000)': [f"{eq_bal:,.0f}", f"{fund_bal:,.0f}", f"{sukuk_bal_v:,.0f}", f"{fvtoci_total:,.0f}"],
-                'Sensitivity Driver': ['Equity market shock', 'Equity market shock', 'Rate shock × duration', '—'],
-                'Impact Channel': ['OCI', 'OCI', 'OCI', '—'],
-                'Source': [
-                    'Extracted' if eq_bal > 0 else 'Default',
-                    'Extracted' if fund_bal > 0 else 'Default',
-                    'Extracted' if sukuk_bal_v > 0 else 'Default',
-                    '',
+                'FVTOCI Category': ['Equity Securities', 'Managed Funds', 'Sukuk (Debt)', '**TOTAL FVTOCI**'],
+                'Balance': [fmt_smart(eq_bal), fmt_smart(fund_bal), fmt_smart(sukuk_bal_v), fmt_smart(fvtoci_total)],
+                'What Moves It': ['Equity market prices', 'Equity market prices', 'Interest rate changes', '—'],
+                'How It Hits OCI': [
+                    'Price up/down → OCI gain/loss',
+                    'Price up/down → OCI gain/loss',
+                    'Rates up → sukuk price down → OCI loss',
+                    '—',
                 ],
             })
             st.dataframe(var_df, hide_index=True, use_container_width=True)
@@ -774,72 +774,127 @@ def main():
             st.markdown("##### Assumptions")
             var_col1, var_col2 = st.columns(2)
             with var_col1:
-                duration = st.number_input("FVTOCI debt duration (years)", 0.5, 10.0, 2.0, 0.5, key="var_dur")
-                st.caption("*Duration assumption — user editable*")
+                duration = st.number_input("FVTOCI sukuk modified duration (years)", 0.5, 10.0, 2.0, 0.5, key="var_dur")
+                st.caption("*Duration is not in the PDF — adjust to DFM's actual portfolio WAL*")
             with var_col2:
                 st.markdown(f'''<div class="info-box">
-                    <strong>Note:</strong> Duration is not available in the PDF. 
-                    Default = 2.0 years (typical for short-medium sukuk). 
-                    Adjust based on DFM's actual portfolio WAL.
+                    <strong>Modified duration</strong> measures how much a sukuk's price changes per 1% move in rates.<br>
+                    Duration of {duration:.1f} years means: if rates rise 1%, sukuk prices fall ~{duration:.1f}%.
                 </div>''', unsafe_allow_html=True)
             
             # -- Equity shock scenarios --
             st.markdown("##### A) Equity Market Shock → OCI Impact")
-            
-            equity_exposed = eq_bal + fund_bal  # both are equity-like
+            st.markdown(f"*Applied to: FVTOCI equity ({fmt_smart(eq_bal)}) + managed funds ({fmt_smart(fund_bal)}) = {fmt_smart(equity_exposed)}*")
             
             eq_shocks = [-30, -20, -10, -5, 0, 5, 10, 20]
             eq_scenarios = []
             for pct in eq_shocks:
                 delta = equity_exposed * pct / 100
+                new_val = equity_exposed + delta
                 eq_scenarios.append({
-                    'Equity Shock': f"{pct:+d}%",
-                    'FVTOCI Equity Δ (AED\'000)': f"{delta:+,.0f}",
-                    'OCI Impact': fmt_smart(delta),
+                    'Equity Market Move': f"{pct:+d}%",
+                    'Current Value': fmt_smart(equity_exposed),
+                    'OCI Gain / (Loss)': f"{delta:+,.0f}",
+                    'New FVTOCI Equity Value': fmt_smart(new_val),
                 })
             
             st.dataframe(pd.DataFrame(eq_scenarios), hide_index=True, use_container_width=True)
             
             # -- Rate shock on FVTOCI debt --
-            st.markdown("##### B) Interest Rate Shock → FVTOCI Debt OCI Impact")
-            st.markdown(f"*Using modified duration = {duration:.1f} years | FVTOCI sukuk balance = {fmt_smart(sukuk_bal_v)}*")
+            st.markdown("##### B) Interest Rate Shock → FVTOCI Sukuk OCI Impact")
+            st.markdown(f"*Applied to: FVTOCI sukuk ({fmt_smart(sukuk_bal_v)}) | Modified duration = {duration:.1f} years*")
             
             rate_shocks = [-200, -100, -50, 0, 50, 100, 200]
             rate_scenarios = []
             for bp in rate_shocks:
-                # Price change ≈ -duration × Δrate
-                price_delta_pct = -duration * (bp / 100)  # bp/100 = percentage point change
-                oci_delta = sukuk_bal_v * price_delta_pct / 100
+                rate_chg_pct = bp / 100  # bps to percentage points
+                price_chg_pct = -duration * rate_chg_pct
+                oci_delta = sukuk_bal_v * price_chg_pct / 100
+                new_val = sukuk_bal_v + oci_delta
                 rate_scenarios.append({
-                    'Rate Shock': f"{bp:+d} bps",
-                    'Price Δ (%)': f"{price_delta_pct:+.1f}%",
-                    'OCI Impact (AED\'000)': f"{oci_delta:+,.0f}",
-                    'OCI Impact': fmt_smart(abs(oci_delta)) if oci_delta != 0 else "—",
+                    'Rate Change': f"{bp:+d} bps",
+                    'Sukuk Price Change': f"{price_chg_pct:+.1f}%",
+                    'OCI Gain / (Loss)': f"{oci_delta:+,.0f}",
+                    'New FVTOCI Sukuk Value': fmt_smart(new_val),
                 })
             
             st.dataframe(pd.DataFrame(rate_scenarios), hide_index=True, use_container_width=True)
             
-            # -- Combined chart --
-            st.markdown("##### Combined Stress Scenario: Equity -20% + Rates +100 bps")
+            # -- Dynamic Combined Stress Scenario --
+            st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+            st.markdown("##### Combined Stress Scenario")
             
-            eq_stress = equity_exposed * (-20) / 100
-            rate_stress = sukuk_bal_v * (-duration * 1) / 100  # +100bps, price falls
+            stress_col1, stress_col2 = st.columns(2)
+            with stress_col1:
+                eq_shock_pct = st.select_slider(
+                    "Equity market shock (%)",
+                    options=[-30, -20, -10, -5, 0, 5, 10, 20],
+                    value=-20,
+                    key="stress_eq",
+                )
+            with stress_col2:
+                rate_shock_bp = st.select_slider(
+                    "Interest rate shock (bps)",
+                    options=[-200, -100, -50, 0, 50, 100, 200],
+                    value=100,
+                    key="stress_rate",
+                )
+            
+            # Compute impacts
+            eq_stress = equity_exposed * eq_shock_pct / 100
+            rate_chg = rate_shock_bp / 100
+            price_chg = -duration * rate_chg
+            rate_stress = sukuk_bal_v * price_chg / 100
             total_stress = eq_stress + rate_stress
             
+            # Summary table
+            stress_df = pd.DataFrame({
+                'Component': ['FVTOCI Equity + Funds', 'FVTOCI Sukuk (Debt)', '**TOTAL OCI IMPACT**'],
+                'Balance': [fmt_smart(equity_exposed), fmt_smart(sukuk_bal_v), fmt_smart(fvtoci_total)],
+                'Shock Applied': [f"{eq_shock_pct:+d}% equity", f"{rate_shock_bp:+d} bps rates", "Combined"],
+                'OCI Gain / (Loss)': [fmt_smart(eq_stress), fmt_smart(rate_stress), fmt_smart(total_stress)],
+            })
+            st.dataframe(stress_df, hide_index=True, use_container_width=True)
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Equity OCI Impact", fmt_smart(eq_stress), f"{eq_shock_pct:+d}% shock")
+            m2.metric("Sukuk OCI Impact", fmt_smart(rate_stress), f"{rate_shock_bp:+d} bps")
+            m3.metric("Total OCI Impact", fmt_smart(total_stress))
+            
+            # Chart with proper margins and label positioning
             fig_var = go.Figure()
+            
+            bar_labels = [
+                f'FVTOCI Equity<br>({eq_shock_pct:+d}% shock)',
+                f'FVTOCI Sukuk<br>({rate_shock_bp:+d} bps)',
+                'Total OCI Impact',
+            ]
+            bar_values = [eq_stress / 1000, rate_stress / 1000, total_stress / 1000]
+            bar_text = [fmt_smart(eq_stress), fmt_smart(rate_stress), fmt_smart(total_stress)]
+            bar_colors = ['#DC3545', '#FF9800', '#0066CC']
+            
             fig_var.add_trace(go.Bar(
-                x=['FVTOCI Equity\n(-20% shock)', 'FVTOCI Debt\n(+100bps)', 'Total OCI Impact'],
-                y=[eq_stress / 1000, rate_stress / 1000, total_stress / 1000],
-                marker_color=['#DC3545', '#FF9800', '#0066CC'],
-                text=[fmt_smart(eq_stress), fmt_smart(rate_stress), fmt_smart(total_stress)],
+                x=bar_labels,
+                y=bar_values,
+                marker_color=bar_colors,
+                text=bar_text,
                 textposition='outside',
+                textfont=dict(size=13),
             ))
+            
+            # Calculate y-axis range to ensure labels aren't cut off
+            min_val = min(bar_values)
+            max_val = max(bar_values)
+            y_pad = max(abs(min_val), abs(max_val)) * 0.25
+            
             fig_var.update_layout(
-                title="OCI Stress Test: Equity -20% + Rates +100bps",
-                height=350,
+                title=f"OCI Stress Test: Equity {eq_shock_pct:+d}% + Rates {rate_shock_bp:+d} bps",
+                height=420,
                 plot_bgcolor='white',
                 yaxis_title='AED Millions',
+                yaxis=dict(range=[min_val - y_pad, max_val + y_pad]),
                 showlegend=False,
+                margin=dict(b=80),
             )
             st.plotly_chart(fig_var, use_container_width=True)
     
