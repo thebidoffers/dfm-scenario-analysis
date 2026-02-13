@@ -448,302 +448,280 @@ def main():
     # ---------- TAB 2: Traded Value ----------
     with tab2:
         st.markdown("### Traded Value Scenario")
-        st.markdown("*Model changes to market trading volumes and their impact on commission income*")
+        st.markdown("*Model incremental ADTV from market drivers and see the impact on commission income*")
         
-        # -- Baseline panel --
-        baseline_tv = d['total_traded_value']  # AED'000, from bulletin or default
-        baseline_adtv = baseline_tv / d['trading_days']
-        baseline_rate = d['comm_rate']
-        baseline_comm = d['comm_annual']
+        # ── Baseline ──────────────────────────────────────────────────
+        baseline_tv = d['total_traded_value']  # AED'000
+        baseline_rate = d['comm_rate']          # bps
+        baseline_comm = d['comm_annual']        # AED'000
         has_bulletin = bul is not None
         
-        st.markdown("##### Baseline")
-        bl1, bl2, bl3, bl4 = st.columns(4)
-        with bl1:
-            src_label = "Bulletin" if has_bulletin else "Default"
-            st.markdown(f'''<div class="metric-card-highlight">
-                <div class="metric-label">Annual Traded Value ({src_label})</div>
-                <div class="metric-value-blue">{fmt_smart(baseline_tv)}</div>
-            </div>''', unsafe_allow_html=True)
-        with bl2:
-            st.markdown(f'''<div class="metric-card-highlight">
-                <div class="metric-label">ADTV</div>
-                <div class="metric-value-blue">{fmt_smart(baseline_adtv)}</div>
-            </div>''', unsafe_allow_html=True)
-        with bl3:
-            st.markdown(f'''<div class="metric-card-highlight">
-                <div class="metric-label">DFM Effective Rate</div>
-                <div class="metric-value-blue">{baseline_rate:.1f} bps</div>
-            </div>''', unsafe_allow_html=True)
-        with bl4:
-            st.markdown(f'''<div class="metric-card-highlight">
-                <div class="metric-label">Annual Commission</div>
-                <div class="metric-value-blue">{fmt_smart(baseline_comm)}</div>
-            </div>''', unsafe_allow_html=True)
+        trading_days_eq = int(d.get('trading_days', 252))
+        baseline_adtv = baseline_tv / trading_days_eq if trading_days_eq > 0 else 0  # AED'000
+        
+        src_tag = "📊 Bulletin" if has_bulletin else "⚠️ Manual"
+        
+        bl1, bl2, bl3 = st.columns(3)
+        bl1.metric("Baseline Annual TV", f"AED {baseline_tv / 1_000_000:.1f}B", src_tag)
+        bl2.metric("Baseline ADTV", f"AED {baseline_adtv / 1_000:.0f}M / day", f"{trading_days_eq} trading days")
+        bl3.metric("Commission Rate", f"{baseline_rate:.1f} bps", f"Income: {fmt_smart(baseline_comm)}")
+        
+        if not has_bulletin:
+            st.warning("No bulletin uploaded — using default baseline. Upload a DFM Trading Bulletin for actual traded value.")
         
         st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
         
-        # -- Mode toggle --
-        tv_mode = st.radio(
-            "Scenario Mode",
-            ["📊 Simple Mode — quick stress test", "🔧 Driver Mode — model what drives ADTV"],
-            key="tv_mode",
-            horizontal=True,
-        )
+        # ── Driver Inputs ─────────────────────────────────────────────
+        st.markdown("##### Incremental ADTV Drivers (AED M / day)")
+        st.caption("*Enter the expected daily traded value change from each driver. Use negatives for headwinds.*")
         
-        is_driver = "Driver" in tv_mode
+        # Row 1
+        dr1, dr2, dr3 = st.columns(3)
         
-        if not is_driver:
-            # ===================== SIMPLE MODE =====================
-            st.markdown("##### Quick Scenario: Adjust traded value by percentage")
-            
-            s_col1, s_col2 = st.columns([1, 2])
-            
-            with s_col1:
-                tv_pct_change = st.slider(
-                    "Traded value change (%)",
-                    min_value=-50, max_value=100, value=0, step=5,
-                    key="tv_simple_pct",
-                )
-                
-                scenario_tv = baseline_tv * (1 + tv_pct_change / 100)
-                scenario_adtv = scenario_tv / d['trading_days']
-                scenario_comm = calc_comm(scenario_tv, baseline_rate)
-                delta_tv = scenario_tv - baseline_tv
-                delta_comm = scenario_comm - baseline_comm
-                comm_pct = (delta_comm / baseline_comm * 100) if baseline_comm > 0 else 0
-            
-            with s_col2:
-                sm1, sm2, sm3 = st.columns(3)
-                sm1.metric("Scenario TV", fmt_smart(scenario_tv), f"{tv_pct_change:+d}%")
-                sm2.metric("Scenario ADTV", fmt_smart(scenario_adtv))
-                sm3.metric("Commission Impact", fmt_smart(delta_comm), f"{comm_pct:+.1f}%", delta_color="normal")
-                
-                simple_df = pd.DataFrame({
-                    'Metric': ['Annual Traded Value', 'ADTV', 'Commission Income'],
-                    'Baseline': [fmt_smart(baseline_tv), fmt_smart(baseline_adtv), fmt_smart(baseline_comm)],
-                    'Scenario': [fmt_smart(scenario_tv), fmt_smart(scenario_adtv), fmt_smart(scenario_comm)],
-                    'Change': [f"{tv_pct_change:+d}%", f"{tv_pct_change:+d}%", fmt_smart(delta_comm)],
-                })
-                st.dataframe(simple_df, hide_index=True, use_container_width=True)
+        with dr1:
+            st.markdown("**1. Volatility / Market Activity**")
+            delta_vol = st.number_input(
+                "Δ ADTV (AED M/day)", -500.0, 500.0, 0.0, 10.0,
+                key="tv_vol", help="Change in daily traded value due to market volatility shifts",
+            )
+            with st.expander("Help me estimate"):
+                vol_pct = st.slider("% change in baseline ADTV", -50, 100, 0, 5, key="tv_vol_est")
+                suggested_vol = baseline_adtv / 1000 * vol_pct / 100  # AED M
+                st.markdown(f"Suggested: **AED {suggested_vol:+,.0f}M / day**")
+                if st.button("Apply", key="tv_vol_btn"):
+                    st.session_state.tv_vol = round(suggested_vol, 1)
+                    st.rerun()
         
+        with dr2:
+            st.markdown("**2. New Listed Products**")
+            st.caption("ETFs, ETPs, structured notes")
+            delta_prod = st.number_input(
+                "Δ ADTV (AED M/day)", -500.0, 500.0, 0.0, 5.0,
+                key="tv_prod", help="Expected daily traded value from new exchange-traded products",
+            )
+            with st.expander("Help me estimate"):
+                n_products = st.number_input("Number of new products", 0, 50, 3, key="tv_prod_n")
+                adtv_per = st.number_input("Avg ADTV per product (AED M)", 0.0, 100.0, 5.0, 1.0, key="tv_prod_avg")
+                suggested_prod = n_products * adtv_per
+                st.markdown(f"Suggested: **AED {suggested_prod:+,.0f}M / day**")
+                if st.button("Apply", key="tv_prod_btn"):
+                    st.session_state.tv_prod = round(suggested_prod, 1)
+                    st.rerun()
+        
+        with dr3:
+            st.markdown("**3. Digital Assets (24/7)**")
+            delta_digital = st.number_input(
+                "Δ ADTV (AED M/day)", 0.0, 500.0, 0.0, 5.0,
+                key="tv_digi", help="Expected daily digital asset traded value",
+            )
+            include_digital = st.checkbox("Include in DFM total?", value=False, key="tv_digi_inc")
+            trading_days_digi = 365
+            with st.expander("Help me estimate"):
+                st.caption("Digital assets trade 365 days/year.")
+                trading_days_digi = st.number_input("Trading days (digital)", 252, 365, 365, 1, key="tv_digi_days")
+        
+        # Row 2
+        dr4, dr5, dr6 = st.columns(3)
+        
+        with dr4:
+            st.markdown("**4. SLB + Financing Rails**")
+            st.caption("Short-selling, borrowing, hedging")
+            delta_slb = st.number_input(
+                "Δ ADTV (AED M/day)", -200.0, 500.0, 0.0, 5.0,
+                key="tv_slb", help="Incremental daily volume from securities lending & financing",
+            )
+            with st.expander("Help me estimate"):
+                slb_pct = st.slider("% lift to baseline ADTV", 0, 20, 0, 1, key="tv_slb_est")
+                suggested_slb = baseline_adtv / 1000 * slb_pct / 100
+                st.markdown(f"Suggested: **AED {suggested_slb:+,.0f}M / day**")
+                if st.button("Apply", key="tv_slb_btn"):
+                    st.session_state.tv_slb = round(suggested_slb, 1)
+                    st.rerun()
+        
+        with dr5:
+            st.markdown("**5. Investor Access Expansion**")
+            st.caption("New markets, platforms, roadshows")
+            delta_access = st.number_input(
+                "Δ ADTV (AED M/day)", 0.0, 500.0, 0.0, 5.0,
+                key="tv_access", help="Daily volume from new investor channels",
+            )
+            with st.expander("Help me estimate"):
+                n_investors = st.number_input("New active investors", 0, 100000, 0, 500, key="tv_acc_n")
+                trades_day = st.number_input("Avg trades / investor / day", 0.0, 10.0, 0.5, 0.1, key="tv_acc_tpd")
+                avg_size = st.number_input("Avg trade size (AED)", 0.0, 500000.0, 50000.0, 5000.0, key="tv_acc_sz")
+                suggested_acc = n_investors * trades_day * avg_size / 1_000_000  # AED M
+                st.markdown(f"Suggested: **AED {suggested_acc:,.1f}M / day**")
+                if st.button("Apply", key="tv_acc_btn"):
+                    st.session_state.tv_access = round(suggested_acc, 1)
+                    st.rerun()
+        
+        with dr6:
+            st.markdown("**6. Other Strategic Growth**")
+            st.caption("Catch-all for other initiatives")
+            delta_other = st.number_input(
+                "Δ ADTV (AED M/day)", -500.0, 500.0, 0.0, 5.0,
+                key="tv_other",
+            )
+            with st.expander("Help me estimate"):
+                other_pct = st.slider("% lift to baseline ADTV", -20, 50, 0, 1, key="tv_oth_est")
+                suggested_oth = baseline_adtv / 1000 * other_pct / 100
+                st.markdown(f"Suggested: **AED {suggested_oth:+,.0f}M / day**")
+                if st.button("Apply", key="tv_oth_btn"):
+                    st.session_state.tv_other = round(suggested_oth, 1)
+                    st.rerun()
+        
+        # ── Core Math ─────────────────────────────────────────────────
+        # All deltas in AED M/day → convert to AED'000/day for internal math
+        delta_eq_adtv_m = delta_vol + delta_prod + delta_slb + delta_access + delta_other  # AED M/day
+        delta_digi_adtv_m = delta_digital if include_digital else 0
+        
+        scenario_adtv_eq = baseline_adtv + delta_eq_adtv_m * 1000  # AED'000/day
+        scenario_annual_eq = scenario_adtv_eq * trading_days_eq     # AED'000/year
+        
+        # Digital: separate trading days
+        digital_annual = delta_digital * 1000 * trading_days_digi   # AED'000/year (always computed)
+        
+        if include_digital:
+            scenario_annual_total = scenario_annual_eq + digital_annual
         else:
-            # ===================== DRIVER MODE =====================
-            st.markdown("##### Build a scenario from market drivers")
-            st.markdown("*Multipliers scale existing volumes. Additive streams bring new volume pools.*")
-            
-            # ---------- MULTIPLIER DRIVERS ----------
-            st.markdown("---")
-            st.markdown("**A) Turnover Multipliers** — scale existing baseline traded value")
-            
-            mult_col1, mult_col2 = st.columns(2)
-            
-            # 4.1 Volatility regime
-            with mult_col1:
-                st.markdown("**Volatility Regime**")
-                vol_regime = st.selectbox(
-                    "Market volatility",
-                    ["Low", "Normal", "High", "Stress"],
-                    index=1,
-                    key="drv_vol",
-                )
-                
-                liq_impaired = False
-                if vol_regime == "Stress":
-                    liq_impaired = st.checkbox("Liquidity impaired?", key="drv_liq")
-                
-                vol_defaults = {
-                    "Low": 0.94, "Normal": 1.00, "High": 1.15, "Stress": 1.08,
-                }
-                vol_impaired_default = 0.92
-                
-                m_vol_default = vol_impaired_default if (vol_regime == "Stress" and liq_impaired) else vol_defaults[vol_regime]
-                
-                with st.expander("Adjust volatility multiplier"):
-                    if vol_regime == "Stress" and liq_impaired:
-                        m_vol = st.slider("Multiplier", 0.80, 1.05, m_vol_default, 0.01, key="drv_mvol")
-                    elif vol_regime == "Low":
-                        m_vol = st.slider("Multiplier", 0.85, 1.00, m_vol_default, 0.01, key="drv_mvol")
-                    elif vol_regime == "High":
-                        m_vol = st.slider("Multiplier", 1.00, 1.30, m_vol_default, 0.01, key="drv_mvol")
-                    elif vol_regime == "Stress":
-                        m_vol = st.slider("Multiplier", 0.95, 1.20, m_vol_default, 0.01, key="drv_mvol")
-                    else:
-                        m_vol = 1.00
-                
-                vol_impact = baseline_tv * (m_vol - 1)
-            
-            # 4.3 SLB + financing
-            with mult_col2:
-                st.markdown("**SLB & Financing Rails**")
-                slb_adoption = st.selectbox(
-                    "SLB adoption level",
-                    ["None", "Pilot", "Moderate", "High"],
-                    index=0,
-                    key="drv_slb",
-                )
-                
-                financing_rails = False
-                if slb_adoption in ["Moderate", "High"]:
-                    financing_rails = st.checkbox("Financing rails available?", value=slb_adoption == "High", key="drv_fin")
-                
-                slb_defaults = {"None": 1.00, "Pilot": 1.02, "Moderate": 1.05, "High": 1.12}
-                m_slb_default = slb_defaults[slb_adoption]
-                if slb_adoption == "High" and not financing_rails:
-                    m_slb_default = 1.06  # cap without financing
-                
-                with st.expander("Adjust SLB multiplier"):
-                    if slb_adoption == "None":
-                        m_slb = 1.00
-                        st.info("No SLB → multiplier fixed at 1.00×")
-                    else:
-                        m_slb = st.slider("Multiplier", 1.00, 1.20, m_slb_default, 0.01, key="drv_mslb")
-                
-                slb_impact = baseline_tv * (m_slb - 1)
-            
-            # Multiplied base
-            tv_after_mult = baseline_tv * m_vol * m_slb
-            
-            # ---------- ADDITIVE DRIVERS ----------
-            st.markdown("---")
-            st.markdown("**B) Additive Volume Streams** — new traded value on top of existing market")
-            
-            add_col1, add_col2 = st.columns(2)
-            
-            # 4.2 ETFs / ETPs
-            with add_col1:
-                st.markdown("**ETFs / ETPs**")
-                etf_method = st.radio("Input method", ["AUM-based", "Direct TV estimate"], key="drv_etf_m", horizontal=True)
-                
-                if etf_method == "AUM-based":
-                    etf_aum_b = st.number_input("Expected AUM (AED B)", 0.0, 50.0, 0.0, 0.5, key="drv_etf_aum")
-                    etf_turnover = st.number_input("Annual turnover rate (×)", 0.5, 20.0, 5.0, 0.5, key="drv_etf_to")
-                    tv_etf = etf_aum_b * 1_000_000 * etf_turnover  # AED'000
-                else:
-                    etf_tv_b = st.number_input("Expected annual TV (AED B)", 0.0, 100.0, 0.0, 1.0, key="drv_etf_tv")
-                    tv_etf = etf_tv_b * 1_000_000
-                
-                etf_spillover_pct = st.slider("Cash market spillover (%)", 0, 20, 5, 1, key="drv_etf_spill")
-                tv_etf_spillover = tv_etf * etf_spillover_pct / 100
-            
-            with add_col2:
-                st.markdown("**Structured Notes**")
-                notes_issuance_b = st.number_input("Annual issuance (AED B)", 0.0, 20.0, 0.0, 0.5, key="drv_notes_iss")
-                notes_lp = st.checkbox("Liquidity provider support?", value=False, key="drv_notes_lp")
-                
-                notes_max_to = 0.15 if notes_lp else 0.03
-                notes_turnover = st.slider(
-                    "Secondary turnover rate (%)",
-                    0, int(notes_max_to * 100), min(5, int(notes_max_to * 100)), 1,
-                    key="drv_notes_to",
-                ) / 100  # convert back to decimal
-                tv_notes = notes_issuance_b * 1_000_000 * notes_turnover
-                
-                if not notes_lp and notes_issuance_b > 0:
-                    st.caption(f"*No LP → turnover capped at {notes_max_to*100:.0f}%*")
-            
-            add_col3, add_col4 = st.columns(2)
-            
-            # 4.4 Digital assets
-            with add_col3:
-                st.markdown("**Digital Assets (24/7)**")
-                crypto_adtv_m = st.number_input("Expected daily TV (AED M)", 0.0, 500.0, 0.0, 5.0, key="drv_crypto_adtv")
-                crypto_days = st.number_input("Trading days/year", 252, 365, 365, 1, key="drv_crypto_days")
-                
-                crypto_regime = st.selectbox("Crypto market regime", ["Bear", "Normal", "Bull"], index=1, key="drv_crypto_reg")
-                crypto_mult = {"Bear": 0.5, "Normal": 1.0, "Bull": 2.0}[crypto_regime]
-                
-                tv_crypto = crypto_adtv_m * 1000 * crypto_days * crypto_mult  # AED'000
-                
-                include_crypto = st.checkbox("Include in DFM total traded value?", value=True, key="drv_crypto_inc")
-            
-            # 4.5 Investor access expansion
-            with add_col4:
-                st.markdown("**Investor Access Expansion**")
-                access_aum_b = st.number_input("Incremental AUM inflow (AED B)", 0.0, 20.0, 0.0, 0.5, key="drv_access_aum")
-                access_turnover = st.number_input("Turnover rate on new AUM (×)", 0.5, 10.0, 3.0, 0.5, key="drv_access_to")
-                access_ramp = st.slider("% realized this year", 0, 100, 100, 10, key="drv_access_ramp")
-                
-                tv_access = access_aum_b * 1_000_000 * access_turnover * access_ramp / 100
-            
-            # ---------- AGGREGATE ----------
-            tv_crypto_included = tv_crypto if include_crypto else 0
-            tv_additive = tv_etf + tv_etf_spillover + tv_notes + tv_crypto_included + tv_access
-            
-            scenario_tv = tv_after_mult + tv_additive
-            delta_tv = scenario_tv - baseline_tv
-            delta_pct = (delta_tv / baseline_tv * 100) if baseline_tv > 0 else 0
-            scenario_adtv = scenario_tv / d['trading_days']
-            scenario_comm = calc_comm(scenario_tv, baseline_rate)
-            delta_comm = scenario_comm - baseline_comm
-            comm_pct = (delta_comm / baseline_comm * 100) if baseline_comm > 0 else 0
-            
-            # ---------- OUTPUTS ----------
-            st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
-            st.markdown("##### Scenario Results")
-            
-            r1, r2, r3 = st.columns(3)
-            r1.metric("Scenario Traded Value", fmt_smart(scenario_tv), f"{delta_pct:+.1f}%")
-            r2.metric("Scenario ADTV", fmt_smart(scenario_adtv))
-            r3.metric("Commission Impact", fmt_smart(delta_comm), f"{comm_pct:+.1f}%", delta_color="normal")
-            
-            # Driver contribution table
-            st.markdown("##### Driver Contribution Breakdown")
-            
-            # Multiplier impacts (calculated as marginal contributions)
-            # vol impact = baseline × (m_vol - 1)
-            # slb impact = baseline × m_vol × (m_slb - 1)  [applied after vol]
-            vol_contribution = baseline_tv * (m_vol - 1)
-            slb_contribution = baseline_tv * m_vol * (m_slb - 1)
-            
-            drivers = [
-                ("Volatility regime", "Multiplier", f"{m_vol:.2f}×", vol_contribution),
-                ("SLB & financing", "Multiplier", f"{m_slb:.2f}×", slb_contribution),
-                ("ETFs / ETPs", "Additive", "—", tv_etf),
-                ("ETF cash spillover", "Additive", f"{etf_spillover_pct}%", tv_etf_spillover),
-                ("Structured notes", "Additive", "—", tv_notes),
-                ("Digital assets", "Additive", "—" if include_crypto else "Excluded", tv_crypto_included),
-                ("Investor access", "Additive", "—", tv_access),
-            ]
-            
-            driver_rows = []
-            for name, dtype, factor, impact in drivers:
-                if abs(impact) > 0.5:  # only show non-zero drivers
-                    driver_rows.append({
-                        'Driver': name,
-                        'Type': dtype,
-                        'Factor': factor,
-                        'TV Impact': fmt_smart(impact),
-                        'Commission Impact': fmt_smart(impact * baseline_rate / 10000),
-                    })
-            
-            if driver_rows:
-                # Add total row
-                driver_rows.append({
-                    'Driver': '**TOTAL SCENARIO Δ**',
-                    'Type': '',
-                    'Factor': '',
-                    'TV Impact': fmt_smart(delta_tv),
-                    'Commission Impact': fmt_smart(delta_comm),
-                })
-                st.dataframe(pd.DataFrame(driver_rows), hide_index=True, use_container_width=True)
-            else:
-                st.info("All drivers at baseline — adjust inputs above to model a scenario.")
-            
-            # Summary comparison
-            summary_df = pd.DataFrame({
-                'Metric': ['Annual Traded Value', 'ADTV', 'Commission Income'],
-                'Baseline': [fmt_smart(baseline_tv), fmt_smart(baseline_adtv), fmt_smart(baseline_comm)],
-                'Scenario': [fmt_smart(scenario_tv), fmt_smart(scenario_adtv), fmt_smart(scenario_comm)],
-                'Change': [f"{delta_pct:+.1f}%", f"{delta_pct:+.1f}%", fmt_smart(delta_comm)],
+            scenario_annual_total = scenario_annual_eq
+        
+        delta_annual = scenario_annual_total - baseline_tv
+        delta_annual_pct = (delta_annual / baseline_tv * 100) if baseline_tv > 0 else 0
+        
+        scenario_comm = calc_comm(scenario_annual_total, baseline_rate)
+        delta_comm = scenario_comm - baseline_comm
+        comm_pct = (delta_comm / baseline_comm * 100) if baseline_comm > 0 else 0
+        
+        # ── Impact Summary ────────────────────────────────────────────
+        st.markdown('<hr class="section-divider">', unsafe_allow_html=True)
+        st.markdown("##### Impact Summary")
+        
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Baseline ADTV", f"AED {baseline_adtv / 1000:,.0f}M / day")
+        
+        scenario_adtv_display = scenario_adtv_eq + (delta_digi_adtv_m * 1000)
+        total_delta_adtv_m = delta_eq_adtv_m + delta_digi_adtv_m
+        k2.metric("Scenario ADTV", f"AED {scenario_adtv_display / 1000:,.0f}M / day", f"{total_delta_adtv_m:+,.0f}M")
+        
+        k3.metric("Scenario Annual TV", f"AED {scenario_annual_total / 1_000_000:,.1f}B", f"{delta_annual_pct:+.1f}%")
+        k4.metric("Commission Impact", fmt_smart(delta_comm), f"{comm_pct:+.1f}%", delta_color="normal")
+        
+        # ── Driver Contribution Table ─────────────────────────────────
+        st.markdown("##### Driver Contribution Breakdown")
+        
+        drivers = [
+            ("Volatility / Market Activity", delta_vol, trading_days_eq),
+            ("New Listed Products", delta_prod, trading_days_eq),
+            ("SLB + Financing Rails", delta_slb, trading_days_eq),
+            ("Investor Access Expansion", delta_access, trading_days_eq),
+            ("Other Strategic Growth", delta_other, trading_days_eq),
+        ]
+        
+        if include_digital:
+            drivers.append(("Digital Assets (24/7)", delta_digital, trading_days_digi))
+        elif delta_digital > 0:
+            drivers.append(("Digital Assets (excluded)", delta_digital, trading_days_digi))
+        
+        driver_rows = []
+        for name, adtv_m, tdays in drivers:
+            annual_b = adtv_m * 1000 * tdays / 1_000_000  # AED B
+            comm_impact = adtv_m * 1000 * tdays * baseline_rate / 10000  # AED'000
+            driver_rows.append({
+                'Driver': name,
+                'Δ ADTV (AED M/day)': f"{adtv_m:+,.0f}" if adtv_m != 0 else "—",
+                'Annual Impact (AED B)': f"{annual_b:+,.1f}" if adtv_m != 0 else "—",
+                'Commission Impact': fmt_smart(comm_impact) if abs(comm_impact) > 0.5 else "—",
             })
-            st.dataframe(summary_df, hide_index=True, use_container_width=True)
+        
+        # Total row
+        driver_rows.append({
+            'Driver': '**TOTAL**',
+            'Δ ADTV (AED M/day)': f"{total_delta_adtv_m:+,.0f}",
+            'Annual Impact (AED B)': f"{delta_annual / 1_000_000:+,.1f}",
+            'Commission Impact': fmt_smart(delta_comm),
+        })
+        
+        st.dataframe(pd.DataFrame(driver_rows), hide_index=True, use_container_width=True)
+        
+        # ── Summary Table ─────────────────────────────────────────────
+        sum_rows = [
+            {
+                'Metric': 'Annual Traded Value (equities)',
+                'Baseline': f"AED {baseline_tv / 1_000_000:.1f}B",
+                'Scenario': f"AED {scenario_annual_eq / 1_000_000:.1f}B",
+                'Change': f"{(scenario_annual_eq - baseline_tv) / baseline_tv * 100:+.1f}%" if baseline_tv > 0 else "—",
+            },
+        ]
+        
+        if delta_digital > 0:
+            sum_rows.append({
+                'Metric': f'Digital Assets Annual TV ({"included" if include_digital else "separate"})',
+                'Baseline': "—",
+                'Scenario': f"AED {digital_annual / 1_000_000:.1f}B",
+                'Change': "New",
+            })
+        
+        if include_digital and delta_digital > 0:
+            sum_rows.append({
+                'Metric': 'Total Annual TV (incl. digital)',
+                'Baseline': f"AED {baseline_tv / 1_000_000:.1f}B",
+                'Scenario': f"AED {scenario_annual_total / 1_000_000:.1f}B",
+                'Change': f"{delta_annual_pct:+.1f}%",
+            })
+        
+        sum_rows.append({
+            'Metric': 'Annual Commission Income',
+            'Baseline': fmt_smart(baseline_comm),
+            'Scenario': fmt_smart(scenario_comm),
+            'Change': fmt_smart(delta_comm),
+        })
+        
+        st.dataframe(pd.DataFrame(sum_rows), hide_index=True, use_container_width=True)
+        
+        # ── Chart ─────────────────────────────────────────────────────
+        if abs(delta_annual) > 0.5:
+            fig_tv = go.Figure()
             
-            # Digital assets note (if excluded)
-            if tv_crypto > 0 and not include_crypto:
-                st.markdown(f'''<div class="info-box">
-                    <strong>Digital assets (excluded from total):</strong> {fmt_smart(tv_crypto)} annual traded value shown separately. Toggle "Include in DFM total" above to add.
-                </div>''', unsafe_allow_html=True)
+            labels = ['Baseline']
+            values = [baseline_tv / 1_000_000]
+            colors = ['#0066CC']
+            texts = [f"AED {baseline_tv / 1_000_000:.1f}B"]
+            
+            if include_digital and delta_digital > 0:
+                labels.append('Scenario\n(excl. digital)')
+                values.append(scenario_annual_eq / 1_000_000)
+                colors.append('#28A745')
+                texts.append(f"AED {scenario_annual_eq / 1_000_000:.1f}B")
+                
+                labels.append('Scenario\n(incl. digital)')
+                values.append(scenario_annual_total / 1_000_000)
+                colors.append('#17A2B8')
+                texts.append(f"AED {scenario_annual_total / 1_000_000:.1f}B")
+            else:
+                labels.append('Scenario')
+                values.append(scenario_annual_total / 1_000_000)
+                colors.append('#28A745' if delta_annual >= 0 else '#DC3545')
+                texts.append(f"AED {scenario_annual_total / 1_000_000:.1f}B")
+            
+            fig_tv.add_trace(go.Bar(
+                x=labels, y=values,
+                marker_color=colors,
+                text=texts,
+                textposition='outside',
+                textfont=dict(size=13),
+            ))
+            
+            y_max = max(values) * 1.15
+            fig_tv.update_layout(
+                title="Annual Traded Value: Baseline vs Scenario",
+                height=380,
+                plot_bgcolor='white',
+                yaxis_title='AED Billions',
+                yaxis=dict(range=[0, y_max]),
+                showlegend=False,
+            )
+            st.plotly_chart(fig_tv, use_container_width=True)
     
     # ---------- TAB 3: Interest Rate ----------
     with tab3:
