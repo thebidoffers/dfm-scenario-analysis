@@ -616,40 +616,35 @@ def main():
             
             inc_d4 = st.checkbox("Include in total", value=True, key="tv_inc_d4")
             
-            st.caption("**Formula:** Capital = Investors × Avg Capital → Deployed = Capital × Deploy% → ADTV = Deployed × Turnover%")
+            st.caption("**Formula:** ADTV = Investors × Capital per Investor × Daily Turnover%")
             st.caption("**New Active Investors** — Number of new investors entering the market  \n"
-                       "**Avg Funded Capital** — Average capital each new investor brings  \n"
-                       "**Deployed into DFM** — % of funded capital actually invested in DFM  \n"
-                       "**Daily Turnover** — How often deployed capital trades per day")
+                       "**Avg Capital per Investor** — Average capital each investor brings to DFM  \n"
+                       "**Daily Turnover** — % of capital that trades each day")
             
-            p4c1, p4c2 = st.columns(2)
+            p4c1, p4c2, p4c3 = st.columns(3)
             with p4c1:
                 acc_investors = st.number_input(
                     "New active investors", 0, 10_000_000, 0, 1000,
                     key="tv_acc_inv",
                 )
+            with p4c2:
                 acc_capital = st.number_input(
-                    "Avg funded capital (AED)", 0.0, 100_000_000.0, 200000.0, 50000.0,
+                    "Avg capital / investor (AED)", 0.0, 100_000_000.0, 1000.0, 500.0,
                     key="tv_acc_cap", format="%.0f",
                 )
-            with p4c2:
-                acc_deploy = st.number_input(
-                    "Deployed into DFM (%)", 0.0, 100.0, 50.0, 5.0,
-                    key="tv_acc_deploy",
-                )
+            with p4c3:
                 acc_daily_turn = st.number_input(
                     "Daily turnover (%)", 0.0, 100.0, 0.5, 0.1,
                     key="tv_acc_turn",
                 )
             
-            acc_funded = acc_investors * acc_capital
-            acc_deployed = acc_funded * (acc_deploy / 100)
-            d4_adtv_aed = acc_deployed * (acc_daily_turn / 100)
+            d4_total_capital = acc_investors * acc_capital
+            d4_adtv_aed = d4_total_capital * (acc_daily_turn / 100)
             d4_adtv_thous = d4_adtv_aed / 1000
             d4_annual_thous = d4_adtv_thous * equities_trading_days
             
             if acc_investors > 0:
-                st.caption(f"Total funded: AED {acc_funded / 1e6:.1f}M → Deployed: AED {acc_deployed / 1e6:.1f}M")
+                st.caption(f"Total capital: AED {d4_total_capital / 1e6:.1f}M")
                 st.markdown(f"**→ ADTV: AED {d4_adtv_thous / 1_000:.1f}M / day  |  Annual: AED {d4_annual_thous / 1_000_000:.1f}B**")
             else:
                 st.caption("*Set inputs above to see implied ADTV*")
